@@ -59,19 +59,19 @@ fun AudioControls() {
         
         Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(0.dp)) {
             Text("Bass  ${bass.toInt()}%", color = Color.LightGray, fontSize = 12.sp)
-            Slider(value = bass, onValueChange = { bass = it }, valueRange = 0f..100f, 
+            Slider(value = bass, onValueChange = { bass = it; AudioEngine.setBass(it) }, valueRange = 0f..100f, 
                 colors = SliderDefaults.colors(thumbColor = Accent, activeTrackColor = Accent))
             
             Text("Treble  ${treble.toInt()}%", color = Color.LightGray, fontSize = 12.sp)
-            Slider(value = treble, onValueChange = { treble = it }, valueRange = 0f..100f,
+            Slider(value = treble, onValueChange = { treble = it; AudioEngine.setTreble(it) }, valueRange = 0f..100f,
                 colors = SliderDefaults.colors(thumbColor = Accent, activeTrackColor = Accent))
 
             Text("Hall Effect  ${hall.toInt()}%", color = Color.LightGray, fontSize = 12.sp)
-            Slider(value = hall, onValueChange = { hall = it }, valueRange = 0f..100f,
+            Slider(value = hall, onValueChange = { hall = it; AudioEngine.setHallEffect(it) }, valueRange = 0f..100f,
                 colors = SliderDefaults.colors(thumbColor = Accent, activeTrackColor = Accent))
             
             Text("Volume Boost  ${volumeBoost.toInt()}%", color = Color.LightGray, fontSize = 12.sp)
-            Slider(value = volumeBoost, onValueChange = { volumeBoost = it }, valueRange = 0f..100f,
+            Slider(value = volumeBoost, onValueChange = { volumeBoost = it; AudioEngine.setVolumeBoost(it) }, valueRange = 0f..100f,
                 colors = SliderDefaults.colors(thumbColor = Accent, activeTrackColor = Accent))
         }
 

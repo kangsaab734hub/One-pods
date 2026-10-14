@@ -63,6 +63,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        AudioEngine.initAudioEffects()
 
         val filter = IntentFilter().apply {
             addAction(BluetoothDevice.ACTION_ACL_CONNECTED)
@@ -107,18 +108,12 @@ class MainActivity : ComponentActivity() {
     @Suppress("MissingPermission", "DEPRECATION")
     private fun refreshBluetooth() {
         started = true
-        val manager = getSystemService(BLUETOOTH_SERVICE) as BluetoothManager
+        val manager = getSystemService(BLUETOOTH_SERVICE) as android.bluetooth.BluetoothManager
         val adapter = manager.adapter
 
-        if (adapter == null) {
-            connectionStatus = "Bluetooth not available"
-            deviceName = "Your AirPods"
-            return
-        }
-
-        if (!adapter.isEnabled) {
-            connectionStatus = "Bluetooth is turned off"
-            deviceName = "Your AirPods"
+        if (adapter == null || !adapter.isEnabled) {
+            connectionStatus = if (adapter == null) "Bluetooth not available" else "Bluetooth is turned off"
+            deviceName = "Your Earbuds"
             return
         }
 
@@ -129,87 +124,40 @@ class MainActivity : ComponentActivity() {
             return
         }
 
-        val airPods = bonded.firstOrNull {
-            val name = it.name.orEmpty()
-            name.contains("airpod", ignoreCase = true) ||
-                name.contains("pods", ignoreCase = true)
-        }
+        // Find EXACT currently connected device (ignores name check)
+        val airPods = bonded.firstOrNull { device ->
+            try {
+                device.javaClass.getMethod("isConnected").invoke(device) as? Boolean == true
+            } catch(e: Exception) { false }
+        } ?: bonded.firstOrNull()
 
         if (airPods == null) {
-            deviceName = "AirPods not found"
-            connectionStatus = "Pair your AirPods in Bluetooth settings"
+            deviceName = "No devices found"
+            connectionStatus = "Pair your earbuds in Bluetooth settings"
             batteryText = "--%"
             return
         }
 
-        deviceName = airPods.name ?: "Your AirPods"
+        deviceName = airPods.name ?: "Your Earbuds"
         checkAirPodsConnection(adapter, airPods)
 
-        if (Build.VERSION.SDK_INT >= 33) {
+        if (android.os.Build.VERSION.SDK_INT >= 33) {
             val level = try {
                 airPods.javaClass.getMethod("getBatteryLevel").invoke(airPods) as? Int
-            } catch (_: Exception) {
-                null
-            }
+            } catch (_: Exception) { null }
             batteryText = if (level != null && level in 0..100) "$level%" else "--%"
         } else {
             batteryText = "--%"
         }
     }
-
     @Suppress("MissingPermission")
-    private fun checkAirPodsConnection(
-        adapter: BluetoothAdapter,
-        device: BluetoothDevice
-    ) {
-        val address = device.address
-        var pending = 2
-        var connected = false
-        connectionStatus = "Checking AirPods connection…"
-
-        fun request(profile: Int) {
-            val accepted = adapter.getProfileProxy(
-                this,
-                object : android.bluetooth.BluetoothProfile.ServiceListener {
-                    override fun onServiceConnected(
-                        profileType: Int,
-                        proxy: android.bluetooth.BluetoothProfile
-                    ) {
-                        try {
-                            if (proxy.connectedDevices.any { it.address == address }) {
-                                connected = true
-                                connectionStatus = "Bluetooth connected"
-                            }
-                        } catch (_: SecurityException) {
-                            connectionStatus = "Bluetooth permission required"
-                        } finally {
-                            pending--
-                            if (!connected && pending <= 0) {
-                                connectionStatus = "Paired · not connected"
-                            }
-                            adapter.closeProfileProxy(profileType, proxy)
-                        }
-                    }
-
-                    override fun onServiceDisconnected(profileType: Int) {
-                        pending--
-                        if (!connected && pending <= 0) {
-                            connectionStatus = "Paired · not connected"
-                        }
-                    }
-                },
-                profile
-            )
-            if (!accepted) {
-                pending--
-                if (!connected && pending <= 0) {
-                    connectionStatus = "Paired · not connected"
-                }
-            }
+    private fun checkAirPodsConnection(adapter: BluetoothAdapter, device: BluetoothDevice) {
+        try {
+            val isConnected = device.javaClass.getMethod("isConnected").invoke(device) as? Boolean ?: false
+            connectionStatus = if (isConnected) "Connected" else "Not Connected"
+        } catch (e: Exception) {
+            connectionStatus = "Not Connected"
         }
-
-        request(android.bluetooth.BluetoothProfile.A2DP)
-        request(android.bluetooth.BluetoothProfile.HEADSET)
     }
 
     override fun onDestroy() {
@@ -217,6 +165,7 @@ class MainActivity : ComponentActivity() {
             unregisterReceiver(bluetoothReceiver)
         } catch (_: Exception) {
         }
+        AudioEngine.release()
         super.onDestroy()
     }
 }

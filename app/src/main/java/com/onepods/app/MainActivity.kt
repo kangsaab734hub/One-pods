@@ -65,9 +65,6 @@ class MainActivity : ComponentActivity() {
         val filter = IntentFilter().apply {
             addAction(BluetoothDevice.ACTION_ACL_CONNECTED)
             addAction(BluetoothDevice.ACTION_ACL_DISCONNECTED)
-            if (Build.VERSION.SDK_INT >= 33) {
-                addAction(BluetoothDevice.ACTION_BATTERY_LEVEL_CHANGED)
-            }
             addAction(BluetoothAdapter.ACTION_STATE_CHANGED)
         }
 

@@ -19,8 +19,8 @@ fun AudioControls() {
     val context = LocalContext.current
     var bass by remember { mutableFloatStateOf(50f) }
     var treble by remember { mutableFloatStateOf(50f) }
-    var bassBoost by remember { mutableStateOf(false) }
-    var volumeBoost by remember { mutableStateOf(false) }
+    var hall by remember { mutableFloatStateOf(0f) }
+    var volumeBoost by remember { mutableFloatStateOf(0f) }
     var preset by remember { mutableStateOf("Balanced") }
     var noiseControl by remember { mutableStateOf("Off") }
 
@@ -65,20 +65,17 @@ fun AudioControls() {
             Text("Treble  ${treble.toInt()}%", color = Color.LightGray, fontSize = 12.sp)
             Slider(value = treble, onValueChange = { treble = it }, valueRange = 0f..100f,
                 colors = SliderDefaults.colors(thumbColor = Accent, activeTrackColor = Accent))
+
+            Text("Hall Effect  ${hall.toInt()}%", color = Color.LightGray, fontSize = 12.sp)
+            Slider(value = hall, onValueChange = { hall = it }, valueRange = 0f..100f,
+                colors = SliderDefaults.colors(thumbColor = Accent, activeTrackColor = Accent))
+            
+            Text("Volume Boost  ${volumeBoost.toInt()}%", color = Color.LightGray, fontSize = 12.sp)
+            Slider(value = volumeBoost, onValueChange = { volumeBoost = it }, valueRange = 0f..100f,
+                colors = SliderDefaults.colors(thumbColor = Accent, activeTrackColor = Accent))
         }
 
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("Bass Boost", color = Color.White, modifier = Modifier.weight(1f))
-            Switch(checked = bassBoost, onCheckedChange = { bassBoost = it }, 
-                colors = SwitchDefaults.colors(checkedThumbColor = Accent, checkedTrackColor = Accent.copy(alpha = 0.5f)))
-        }
-
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("Volume Boost", color = Color.White, modifier = Modifier.weight(1f))
-            Switch(checked = volumeBoost, onCheckedChange = { volumeBoost = it }, 
-                colors = SwitchDefaults.colors(checkedThumbColor = Accent, checkedTrackColor = Accent.copy(alpha = 0.5f)))
-        }
-
+        Spacer(modifier = Modifier.height(2.dp))
         Text("EQ Preset: $preset", color = Color.LightGray, fontSize = 12.sp)
         presets.chunked(3).forEach { pair ->
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {

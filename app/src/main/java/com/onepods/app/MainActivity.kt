@@ -17,6 +17,8 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -141,16 +143,7 @@ class MainActivity : ComponentActivity() {
         }
 
         deviceName = airPods.name ?: "Your AirPods"
-        val connected = try {
-            adapter.getProfileConnectionState(android.bluetooth.BluetoothProfile.A2DP) ==
-                android.bluetooth.BluetoothProfile.STATE_CONNECTED ||
-            adapter.getProfileConnectionState(android.bluetooth.BluetoothProfile.HEADSET) ==
-                android.bluetooth.BluetoothProfile.STATE_CONNECTED
-        } catch (_: Exception) {
-            false
-        }
-
-        connectionStatus = if (connected) "Bluetooth connected" else "Paired · not connected"
+        checkAirPodsConnection(adapter, airPods)
 
         if (Build.VERSION.SDK_INT >= 33) {
             val level = try {
@@ -162,6 +155,61 @@ class MainActivity : ComponentActivity() {
         } else {
             batteryText = "--%"
         }
+    }
+
+    @Suppress("MissingPermission")
+    private fun checkAirPodsConnection(
+        adapter: BluetoothAdapter,
+        device: BluetoothDevice
+    ) {
+        val address = device.address
+        var pending = 2
+        var connected = false
+        connectionStatus = "Checking AirPods connection…"
+
+        fun request(profile: Int) {
+            val accepted = adapter.getProfileProxy(
+                this,
+                object : android.bluetooth.BluetoothProfile.ServiceListener {
+                    override fun onServiceConnected(
+                        profileType: Int,
+                        proxy: android.bluetooth.BluetoothProfile
+                    ) {
+                        try {
+                            if (proxy.connectedDevices.any { it.address == address }) {
+                                connected = true
+                                connectionStatus = "Bluetooth connected"
+                            }
+                        } catch (_: SecurityException) {
+                            connectionStatus = "Bluetooth permission required"
+                        } finally {
+                            pending--
+                            if (!connected && pending <= 0) {
+                                connectionStatus = "Paired · not connected"
+                            }
+                            adapter.closeProfileProxy(profileType, proxy)
+                        }
+                    }
+
+                    override fun onServiceDisconnected(profileType: Int) {
+                        pending--
+                        if (!connected && pending <= 0) {
+                            connectionStatus = "Paired · not connected"
+                        }
+                    }
+                },
+                profile
+            )
+            if (!accepted) {
+                pending--
+                if (!connected && pending <= 0) {
+                    connectionStatus = "Paired · not connected"
+                }
+            }
+        }
+
+        request(android.bluetooth.BluetoothProfile.A2DP)
+        request(android.bluetooth.BluetoothProfile.HEADSET)
     }
 
     override fun onDestroy() {
@@ -251,8 +299,9 @@ fun OnePodsScreen(
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 FeatureCard(Modifier.weight(1f), "Connection", connectionStatus)
-                FeatureCard(Modifier.weight(1f), "Sound", "Not implemented yet")
+                FeatureCard(Modifier.weight(1f), "Sound", "Audio controls")
             }
+            AudioControls()
             Spacer(Modifier.weight(1f))
             Text("Made for your listening experience", color = Color.DarkGray,
                 fontSize = 12.sp, modifier = Modifier.align(Alignment.CenterHorizontally))

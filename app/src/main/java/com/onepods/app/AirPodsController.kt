@@ -221,7 +221,7 @@ object AirPodsController {
                     val headset = proxy as BluetoothHeadset
                     // Try reflection methods on BluetoothHeadset to send AT/Vendor commands over existing system HFP
                     val methods = HiddenApiBypass.getDeclaredMethods(BluetoothHeadset::class.java)
-                    val vendorM = methods.firstOrNull { it.name == "sendVendorSpecificResultCode" }
+                    val vendorM = methods.firstOrNull { (it as java.lang.reflect.Member).name == "sendVendorSpecificResultCode" }
                     if (vendorM != null) {
                         val ok1 = headset.sendVendorSpecificResultCode(device, "+XAPL", "iPhone,7")
                         val ok2 = headset.sendVendorSpecificResultCode(device, "+XANC", "$m1")

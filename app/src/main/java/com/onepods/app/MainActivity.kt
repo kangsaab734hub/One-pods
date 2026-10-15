@@ -186,6 +186,7 @@ fun OnePodsScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .background(Brush.verticalGradient(listOf(Color(0xFF17172A), Background)))
+                .verticalScroll(rememberScrollState())
                 .padding(22.dp)
         ) {
             Spacer(Modifier.height(24.dp))
@@ -251,7 +252,7 @@ fun OnePodsScreen(
                 FeatureCard(Modifier.weight(1f), "Sound", "Audio controls")
             }
             AudioControls()
-            Spacer(Modifier.weight(1f))
+            Spacer(Modifier.height(60.dp))
             Text("Made for your listening experience", color = Color.DarkGray,
                 fontSize = 12.sp, modifier = Modifier.align(Alignment.CenterHorizontally))
         }

@@ -20,7 +20,6 @@ object AudioEngine {
             equalizer = Equalizer(0, 0)
             bassBoost = BassBoost(0, 0)
             loudnessEnhancer = LoudnessEnhancer(0)
-            applyEffects()
         } catch (e: Exception) {
             Log.e("AudioEngine", "Error: ${e.message}")
         }
@@ -40,14 +39,7 @@ object AudioEngine {
                 return
             }
 
-            // DHAKKAN FIX: Android EQ on karte hi volume drop karta hai. 
-            // Hum LoudnessEnhancer se automatically wo aawaz wapas loud kar rahe hain.
-            loudnessEnhancer?.enabled = true
-            val baseCompensation = 400 // Natural volume wapas laane ke liye
-            val userBoost = (currentVolumeBoost * 20).toInt()
-            loudnessEnhancer?.setTargetGain(baseCompensation + userBoost)
-
-            // Natural Bass Boost (Bina dusri frequencies ko dabaye)
+            // 1. PURE OLD BASS (Purana best system, koi dhakkan nahi)
             if (currentBass > 0f) {
                 bassBoost?.enabled = true
                 bassBoost?.setStrength((currentBass * 10).toInt().toShort())
@@ -55,7 +47,15 @@ object AudioEngine {
                 bassBoost?.enabled = false
             }
 
-            // Treble Control (Hum baaki frequencies ko flat nahi karenge ab)
+            // 2. VOLUME BOOST
+            if (currentVolumeBoost > 0f) {
+                loudnessEnhancer?.enabled = true
+                loudnessEnhancer?.setTargetGain((currentVolumeBoost * 20).toInt())
+            } else {
+                loudnessEnhancer?.enabled = false
+            }
+
+            // 3. TREBLE
             val bands = equalizer?.numberOfBands ?: 0
             if (currentTreble != 50f && bands > 0) {
                 equalizer?.enabled = true
@@ -63,7 +63,6 @@ object AudioEngine {
                 val trebleGain = (((currentTreble - 50f) / 50f) * maxEq).toInt().toShort()
                 equalizer?.setBandLevel((bands - 1).toShort(), trebleGain)
             } else {
-                // Agar Treble 50% hai toh EQ off rakho taaki original sound bachi rahe
                 equalizer?.enabled = false
             }
 

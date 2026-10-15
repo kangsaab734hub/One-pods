@@ -20,7 +20,6 @@ fun AudioControls() {
     var eqEnabled by remember { mutableStateOf(false) }
     var bass by remember { mutableFloatStateOf(0f) }
     var treble by remember { mutableFloatStateOf(50f) }
-    var hall by remember { mutableFloatStateOf(0f) }
     var volumeBoost by remember { mutableFloatStateOf(0f) }
     var preset by remember { mutableStateOf("Balanced") }
     var noiseControl by remember { mutableStateOf("Off") }
@@ -32,7 +31,6 @@ fun AudioControls() {
 
     Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         
-        // NOISE CONTROL SECTION
         Text("NOISE CONTROL", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp)
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             noiseModes.forEach { mode ->
@@ -71,10 +69,6 @@ fun AudioControls() {
             
             Text("Treble  ${treble.toInt()}%", color = if(eqEnabled) Color.LightGray else Color.DarkGray, fontSize = 12.sp)
             Slider(value = treble, onValueChange = { treble = it; AudioEngine.setTreble(it) }, valueRange = 0f..100f,
-                enabled = eqEnabled, colors = SliderDefaults.colors(thumbColor = Accent, activeTrackColor = Accent))
-
-            Text("Hall Effect  ${hall.toInt()}%", color = if(eqEnabled) Color.LightGray else Color.DarkGray, fontSize = 12.sp)
-            Slider(value = hall, onValueChange = { hall = it; AudioEngine.setHallEffect(it) }, valueRange = 0f..100f,
                 enabled = eqEnabled, colors = SliderDefaults.colors(thumbColor = Accent, activeTrackColor = Accent))
             
             Text("Volume Boost  ${volumeBoost.toInt()}%", color = if(eqEnabled) Color.LightGray else Color.DarkGray, fontSize = 12.sp)

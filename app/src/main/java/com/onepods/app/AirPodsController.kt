@@ -10,9 +10,8 @@ import java.util.UUID
 
 @SuppressLint("MissingPermission")
 object AirPodsController {
-    // Official Apple Accessory Protocol (AAP) BLE Service & Characteristic UUIDs
-    private val APPLE_AAP_SERVICE: UUID = UUID.fromString("74ec2172-0bad-4d01-8f77-997b2be0722a")
-    private val APPLE_AAP_CHAR: UUID = UUID.fromString("74ec2172-0bad-4d01-8f77-997b2be0722b")
+    private val SPP_UUID: UUID = UUID.fromString("00001101-0000-1000-8000-00805f9b34fb")
+    private val HFP_UUID: UUID = UUID.fromString("0000111e-0000-1000-8000-00805f9b34fb")
 
     fun sendNoiseControlCommand(
         context: Context,
@@ -26,86 +25,59 @@ object AirPodsController {
             mainHandler.post { onStatus(msg) }
         }
 
-        try {
-            val manager = context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
-            val adapter = manager.adapter ?: return report("Error: No BT Adapter")
-            val bonded = try { adapter.bondedDevices } catch (e: SecurityException) { null }
-                ?: return report("Error: BT Permission denied")
+        Thread {
+            try {
+                val manager = context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
+                val adapter = manager.adapter ?: return@Thread report("Error: No BT Adapter")
+                val bonded = try { adapter.bondedDevices } catch (e: SecurityException) { null }
+                    ?: return@Thread report("Error: BT Permission denied")
 
-            val device = bonded.firstOrNull { d ->
-                try { d.javaClass.getMethod("isConnected").invoke(d) as? Boolean == true } catch (e: Exception) { false }
-            } ?: bonded.firstOrNull() ?: return report("Error: No Earbuds found")
+                val device = bonded.firstOrNull { d ->
+                    try { d.javaClass.getMethod("isConnected").invoke(d) as? Boolean == true } catch (e: Exception) { false }
+                } ?: bonded.firstOrNull() ?: return@Thread report("Error: No Earbuds found")
 
-            report("Connecting BLE AAP to ${device.name}...")
+                report("Connecting to ${device.name} Classic RFCOMM...")
 
-            device.connectGatt(context, false, object : BluetoothGattCallback() {
-                override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
-                    if (newState == BluetoothProfile.STATE_CONNECTED) {
-                        report("BLE Connected! Discovering Apple Services...")
-                        gatt.discoverServices()
-                    } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
-                        gatt.close()
-                    }
+                // Connect to HFP / SPP Port directly
+                val sock = device.createInsecureRfcommSocketToServiceRecord(HFP_UUID)
+                sock.connect()
+                val out = sock.outputStream
+                val inp = sock.inputStream
+
+                val m0 = when (mode) { "Off" -> 0; "ANC" -> 1; "Transparency" -> 2; else -> 0 }
+                val m1 = m0 + 1
+
+                // 1. Send complete iPhone AG Handshake sequence
+                val initSeq = listOf(
+                    "\r\n+BRSF: 4095\r\n",
+                    "\r\n+XAPL=iPhone,7\r\n",
+                    "AT+XANC=$m1\r\n",
+                    "AT+ANC=$m0\r\n"
+                )
+
+                for (cmd in initSeq) {
+                    out.write(cmd.toByteArray())
+                    out.flush()
+                    Thread.sleep(100)
                 }
 
-                @Suppress("DEPRECATED_RESOLUTION")
-                override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
-                    try {
-                        val service = gatt.getService(APPLE_AAP_SERVICE)
-                        if (service != null) {
-                            val characteristic = service.getCharacteristic(APPLE_AAP_CHAR)
-                            if (characteristic != null) {
-                                val modeByte: Byte = when (mode) {
-                                    "Off" -> 0x01
-                                    "ANC" -> 0x02
-                                    "Transparency" -> 0x03
-                                    else -> 0x01
-                                }
-
-                                // Exact OpenPods/LibrePods Apple AAP Payload Structure
-                                val payload = byteArrayOf(
-                                    0x04, 0x00, 0x04, 0x00, 0x09, 0x00, 0x0D, modeByte, 0x00, 0x00, 0x00
-                                )
-
-                                characteristic.value = payload
-                                val success = gatt.writeCharacteristic(characteristic)
-                                report("Apple AAP BLE Write for $mode: ${if (success) "SUCCESS!" else "Failed"}")
-                            } else {
-                                report("Error: Apple AAP Characteristic not found")
-                            }
-                        } else {
-                            // Fallback: Write to any writable characteristic found in any service
-                            var written = false
-                            for (s in gatt.services) {
-                                for (c in s.characteristics) {
-                                    val props = c.properties
-                                    if ((props and BluetoothGattCharacteristic.PROPERTY_WRITE) != 0 ||
-                                        (props and BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE) != 0) {
-                                        
-                                        val mByte: Byte = when(mode) { "Off" -> 0x01; "ANC" -> 0x02; "Transparency" -> 0x03; else -> 0x01 }
-                                        c.value = byteArrayOf(0x04, 0x00, 0x04, 0x00, 0x09, 0x00, 0x0D, mByte, 0x00, 0x00, 0x00)
-                                        if (gatt.writeCharacteristic(c)) {
-                                            written = true
-                                            report("Fallback BLE Write Success for $mode!")
-                                            break
-                                        }
-                                    }
-                                }
-                                if (written) break
-                            }
-                            if (!written) report("Error: Apple BLE Service missing on this clone.")
-                        }
-                    } catch (e: Exception) {
-                        report("BLE Error: {e.message}")
-                    } finally {
-                        Thread.sleep(400)
-                        gatt.close()
-                    }
+                // 2. Read what earbuds say back
+                Thread.sleep(250)
+                val av = inp.available()
+                val resp = if (av > 0) {
+                    val b = ByteArray(av)
+                    val len = inp.read(b)
+                    String(b.take(len).toByteArray()).replace("\r", "").replace("\n", " ").trim()
+                } else {
+                    "No-Reply"
                 }
-            }, BluetoothDevice.TRANSPORT_LE)
 
-        } catch (e: Exception) {
-            report("Error: ${e.message}")
-        }
+                sock.close()
+                report("Sent $mode via HFP! Pod Reply: $resp")
+
+            } catch (e: Exception) {
+                report("Error: ${e.message}")
+            }
+        }.start()
     }
 }

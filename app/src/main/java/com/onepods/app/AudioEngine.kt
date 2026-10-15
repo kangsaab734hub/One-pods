@@ -4,6 +4,7 @@ import android.media.audiofx.BassBoost
 import android.media.audiofx.Equalizer
 import android.media.audiofx.LoudnessEnhancer
 import android.media.audiofx.Virtualizer
+import android.media.audiofx.PresetReverb
 import android.util.Log
 
 object AudioEngine {
@@ -11,6 +12,7 @@ object AudioEngine {
     private var bassBoost: BassBoost? = null
     private var loudnessEnhancer: LoudnessEnhancer? = null
     private var virtualizer: Virtualizer? = null
+    private var reverb: PresetReverb? = null // Naya Reverb Engine
     
     private var masterEnabled = false
     private var currentBass = 0f
@@ -24,18 +26,14 @@ object AudioEngine {
             bassBoost = BassBoost(0, 0)
             loudnessEnhancer = LoudnessEnhancer(0)
             virtualizer = Virtualizer(0, 0)
+            reverb = PresetReverb(0, 0)
             applyEffects()
-            Log.d("AudioEngine", "Audio engine ready!")
         } catch (e: Exception) {
             Log.e("AudioEngine", "Error: ${e.message}")
         }
     }
 
-    fun setMasterEnable(enabled: Boolean) {
-        masterEnabled = enabled
-        applyEffects()
-    }
-
+    fun setMasterEnable(enabled: Boolean) { masterEnabled = enabled; applyEffects() }
     fun setBass(level: Float) { currentBass = level; applyEffects() }
     fun setTreble(level: Float) { currentTreble = level; applyEffects() }
     fun setHallEffect(level: Float) { currentHall = level; applyEffects() }
@@ -48,23 +46,8 @@ object AudioEngine {
                 bassBoost?.enabled = false
                 loudnessEnhancer?.enabled = false
                 virtualizer?.enabled = false
+                reverb?.enabled = false
                 return
-            }
-
-            // Bass
-            if (currentBass > 0f) {
-                bassBoost?.enabled = true
-                bassBoost?.setStrength((currentBass * 10).toInt().toShort())
-            } else {
-                bassBoost?.enabled = false
-            }
-
-            // Hall (Virtualizer)
-            if (currentHall > 0f) {
-                virtualizer?.enabled = true
-                virtualizer?.setStrength((currentHall * 10).toInt().toShort())
-            } else {
-                virtualizer?.enabled = false
             }
 
             // Volume Boost
@@ -75,20 +58,57 @@ object AudioEngine {
                 loudnessEnhancer?.enabled = false
             }
 
-            // Treble / EQ
-            val bands = equalizer?.numberOfBands ?: 0
-            if (bands > 0) {
-                if (currentTreble == 50f) {
-                    equalizer?.enabled = false
-                } else {
-                    equalizer?.enabled = true
-                    val highestBand = (bands - 1).toShort()
-                    val minEq = equalizer?.bandLevelRange?.get(0) ?: 0
-                    val maxEq = equalizer?.bandLevelRange?.get(1) ?: 0
-                    val targetLevel = minEq + ((maxEq - minEq) * (currentTreble / 100f)).toInt()
-                    equalizer?.setBandLevel(highestBand, targetLevel.toShort())
-                }
+            // DOUBLE ENGINE FIX: Hall Effect (3D Surround + Concert Reverb)
+            if (currentHall > 0f) {
+                // 1. Virtualizer for 3D width
+                virtualizer?.enabled = true
+                virtualizer?.setStrength((currentHall * 10).toInt().toShort())
+                
+                // 2. Real Reverb for Hall Echo
+                reverb?.preset = if (currentHall > 50f) PresetReverb.PRESET_LARGEHALL else PresetReverb.PRESET_MEDIUMHALL
+                reverb?.enabled = true
+            } else {
+                virtualizer?.enabled = false
+                reverb?.enabled = false
             }
+
+            // Deep Bass (Booooooo) & Treble EQ
+            val bands = equalizer?.numberOfBands ?: 0
+            val isEqNeeded = currentBass > 0f || currentTreble != 50f
+            
+            if (isEqNeeded && bands > 0) {
+                equalizer?.enabled = true
+                val minEq = equalizer?.bandLevelRange?.get(0) ?: 0
+                val maxEq = equalizer?.bandLevelRange?.get(1) ?: 0
+                
+                for (i in 0 until bands) {
+                    equalizer?.setBandLevel(i.toShort(), 0)
+                }
+
+                if (currentBass > 0f) {
+                    bassBoost?.enabled = true
+                    bassBoost?.setStrength((currentBass * 4).toInt().toShort())
+
+                    val bassGain = ((currentBass / 100f) * maxEq).toInt().toShort()
+                    equalizer?.setBandLevel(0.toShort(), bassGain) 
+                    
+                    if (bands > 1) {
+                        equalizer?.setBandLevel(1.toShort(), (bassGain / 2).toShort())
+                    }
+                } else {
+                    bassBoost?.enabled = false
+                }
+
+                if (currentTreble != 50f) {
+                    val trebleGain = (((currentTreble - 50f) / 50f) * maxEq).toInt().toShort()
+                    equalizer?.setBandLevel((bands - 1).toShort(), trebleGain)
+                }
+
+            } else {
+                equalizer?.enabled = false
+                bassBoost?.enabled = false
+            }
+
         } catch (e: Exception) {}
     }
 
@@ -98,6 +118,7 @@ object AudioEngine {
             bassBoost?.release()
             loudnessEnhancer?.release()
             virtualizer?.release()
+            reverb?.release()
         } catch (e: Exception) {}
     }
 }

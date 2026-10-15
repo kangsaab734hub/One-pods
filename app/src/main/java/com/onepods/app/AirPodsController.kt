@@ -22,7 +22,7 @@ import java.util.concurrent.TimeUnit
 @SuppressLint("MissingPermission")
 object AirPodsController {
     private val AAP_UUID: UUID = UUID.fromString("74ec2172-0bad-4d01-8f77-997b2be0722a")
-    private valJIELI_SERVICE_UUID: UUID = UUID.fromString("0000ae00-0000-1000-8000-00805f9b34fb")
+    private val JIELI_SERVICE_UUID: UUID = UUID.fromString("0000ae00-0000-1000-8000-00805f9b34fb")
 
     private val HANDSHAKE = byteArrayOf(
         0x00, 0x00, 0x04, 0x00, 0x01, 0x00, 0x02, 0x00,

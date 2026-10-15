@@ -11,23 +11,28 @@ object AirPodsController {
     private val SPP_UUID: UUID = UUID.fromString("00001101-0000-1000-8000-00805f9b34fb")
 
     fun sendNoiseControlCommand(context: Context, mode: String, engine: Int) {
-        val manager = context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
-        val adapter = manager.adapter ?: return
-        
-        val device = adapter.bondedDevices.firstOrNull { d ->
-            try { d.javaClass.getMethod("isConnected").invoke(d) as? Boolean == true } catch(e: Exception){false}
-        } ?: adapter.bondedDevices.firstOrNull() ?: return
+        try {
+            val manager = context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
+            val adapter = manager.adapter ?: return
+            
+            val bonded = try { adapter.bondedDevices } catch (e: SecurityException) { null } ?: return
+            
+            val device = bonded.firstOrNull { d ->
+                try { d.javaClass.getMethod("isConnected").invoke(d) as? Boolean == true } catch(e: Exception){false}
+            } ?: bonded.firstOrNull() ?: return
 
-        Log.d("AirPodsController", "Using Engine $engine to send $mode")
+            Log.d("AirPodsController", "Using Engine $engine to send $mode")
 
-        when (engine) {
-            1 -> sendRfcommHex(device, mode)
-            2 -> sendBleGatt(context, device, mode)
-            3 -> sendRfcommAT(device, mode)
+            when (engine) {
+                1 -> sendRfcommHex(device, mode)
+                2 -> sendBleGatt(context, device, mode)
+                3 -> sendRfcommAT(device, mode)
+            }
+        } catch (e: Exception) {
+            Log.e("AirPodsController", "Crash Prevented: ${e.message}")
         }
     }
 
-    // ENGINE 1: Old Apple Hex Bytes
     private fun sendRfcommHex(device: BluetoothDevice, mode: String) {
         Thread {
             try {
@@ -45,7 +50,6 @@ object AirPodsController {
         }.start()
     }
 
-    // ENGINE 3: Clone AT Commands (Hidden Text)
     private fun sendRfcommAT(device: BluetoothDevice, mode: String) {
         Thread {
             try {
@@ -63,25 +67,22 @@ object AirPodsController {
         }.start()
     }
 
-    // ENGINE 2: iPhone Style BLE GATT
     private fun sendBleGatt(context: Context, device: BluetoothDevice, mode: String) {
-        device.connectGatt(context, false, object : BluetoothGattCallback() {
-            override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
-                if (newState == BluetoothProfile.STATE_CONNECTED) {
-                    gatt.discoverServices()
-                } else {
+        try {
+            device.connectGatt(context, false, object : BluetoothGattCallback() {
+                override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
+                    if (newState == BluetoothProfile.STATE_CONNECTED) {
+                        try { gatt.discoverServices() } catch (e: Exception) { gatt.close() }
+                    } else {
+                        gatt.close()
+                    }
+                }
+                override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
                     gatt.close()
                 }
-            }
-            override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
-                try {
-                    val services = gatt.services
-                    if(services.isNotEmpty()) {
-                        Log.d("AirPodsController", "BLE Services Discovered. Testing connection...")
-                    }
-                    gatt.close()
-                } catch (e: Exception) { gatt.close() }
-            }
-        })
+            })
+        } catch (e: Exception) {
+            Log.e("AirPodsController", "Engine 2 Failed: ${e.message}")
+        }
     }
 }

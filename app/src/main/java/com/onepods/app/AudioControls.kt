@@ -17,7 +17,8 @@ import androidx.compose.ui.unit.sp
 @Composable
 fun AudioControls() {
     val context = LocalContext.current
-    var bass by remember { mutableFloatStateOf(50f) }
+    var eqEnabled by remember { mutableStateOf(false) }
+    var bass by remember { mutableFloatStateOf(0f) }
     var treble by remember { mutableFloatStateOf(50f) }
     var hall by remember { mutableFloatStateOf(0f) }
     var volumeBoost by remember { mutableFloatStateOf(0f) }
@@ -55,28 +56,34 @@ fun AudioControls() {
         }
 
         Spacer(modifier = Modifier.height(4.dp))
-        Text("EQUALIZER & EFFECTS", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("EQUALIZER & EFFECTS", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp, modifier = Modifier.weight(1f))
+            Switch(checked = eqEnabled, onCheckedChange = { 
+                eqEnabled = it
+                AudioEngine.setMasterEnable(it)
+            }, colors = SwitchDefaults.colors(checkedThumbColor = Accent, checkedTrackColor = Accent.copy(alpha = 0.5f)))
+        }
         
         Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(0.dp)) {
-            Text("Bass  ${bass.toInt()}%", color = Color.LightGray, fontSize = 12.sp)
+            Text("Bass  ${bass.toInt()}%", color = if(eqEnabled) Color.LightGray else Color.DarkGray, fontSize = 12.sp)
             Slider(value = bass, onValueChange = { bass = it; AudioEngine.setBass(it) }, valueRange = 0f..100f, 
-                colors = SliderDefaults.colors(thumbColor = Accent, activeTrackColor = Accent))
+                enabled = eqEnabled, colors = SliderDefaults.colors(thumbColor = Accent, activeTrackColor = Accent))
             
-            Text("Treble  ${treble.toInt()}%", color = Color.LightGray, fontSize = 12.sp)
+            Text("Treble  ${treble.toInt()}%", color = if(eqEnabled) Color.LightGray else Color.DarkGray, fontSize = 12.sp)
             Slider(value = treble, onValueChange = { treble = it; AudioEngine.setTreble(it) }, valueRange = 0f..100f,
-                colors = SliderDefaults.colors(thumbColor = Accent, activeTrackColor = Accent))
+                enabled = eqEnabled, colors = SliderDefaults.colors(thumbColor = Accent, activeTrackColor = Accent))
 
-            Text("Hall Effect  ${hall.toInt()}%", color = Color.LightGray, fontSize = 12.sp)
+            Text("Hall Effect  ${hall.toInt()}%", color = if(eqEnabled) Color.LightGray else Color.DarkGray, fontSize = 12.sp)
             Slider(value = hall, onValueChange = { hall = it; AudioEngine.setHallEffect(it) }, valueRange = 0f..100f,
-                colors = SliderDefaults.colors(thumbColor = Accent, activeTrackColor = Accent))
+                enabled = eqEnabled, colors = SliderDefaults.colors(thumbColor = Accent, activeTrackColor = Accent))
             
-            Text("Volume Boost  ${volumeBoost.toInt()}%", color = Color.LightGray, fontSize = 12.sp)
+            Text("Volume Boost  ${volumeBoost.toInt()}%", color = if(eqEnabled) Color.LightGray else Color.DarkGray, fontSize = 12.sp)
             Slider(value = volumeBoost, onValueChange = { volumeBoost = it; AudioEngine.setVolumeBoost(it) }, valueRange = 0f..100f,
-                colors = SliderDefaults.colors(thumbColor = Accent, activeTrackColor = Accent))
+                enabled = eqEnabled, colors = SliderDefaults.colors(thumbColor = Accent, activeTrackColor = Accent))
         }
 
         Spacer(modifier = Modifier.height(2.dp))
-        Text("EQ Preset: $preset", color = Color.LightGray, fontSize = 12.sp)
+        Text("EQ Preset: $preset", color = if(eqEnabled) Color.LightGray else Color.DarkGray, fontSize = 12.sp)
         presets.chunked(3).forEach { pair ->
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 pair.forEach { item ->
@@ -85,6 +92,7 @@ fun AudioControls() {
                         selected = selected,
                         onClick = { preset = item },
                         label = { Text(item, fontSize = 12.sp) },
+                        enabled = eqEnabled,
                         colors = FilterChipDefaults.filterChipColors(
                             containerColor = CardBg,
                             labelColor = Color.LightGray,

@@ -11,48 +11,84 @@ object AudioEngine {
     private var bassBoost: BassBoost? = null
     private var loudnessEnhancer: LoudnessEnhancer? = null
     private var virtualizer: Virtualizer? = null
+    
+    private var masterEnabled = false
+    private var currentBass = 0f
+    private var currentTreble = 50f
+    private var currentHall = 0f
+    private var currentVolumeBoost = 0f
 
     fun initAudioEffects() {
         try {
-            equalizer = Equalizer(0, 0).apply { enabled = true }
-            bassBoost = BassBoost(0, 0).apply { enabled = true }
-            loudnessEnhancer = LoudnessEnhancer(0).apply { enabled = true }
-            // Virtualizer creates a 3D Hall/Concert effect and works on global audio
-            virtualizer = Virtualizer(0, 0).apply { enabled = true }
-            Log.d("AudioEngine", "Audio effects on!")
+            equalizer = Equalizer(0, 0)
+            bassBoost = BassBoost(0, 0)
+            loudnessEnhancer = LoudnessEnhancer(0)
+            virtualizer = Virtualizer(0, 0)
+            applyEffects()
+            Log.d("AudioEngine", "Audio engine ready!")
         } catch (e: Exception) {
             Log.e("AudioEngine", "Error: ${e.message}")
         }
     }
 
-    fun setBass(level: Float) {
-        try {
-            bassBoost?.setStrength((level * 10).toInt().toShort())
-        } catch (e: Exception) {}
+    fun setMasterEnable(enabled: Boolean) {
+        masterEnabled = enabled
+        applyEffects()
     }
 
-    fun setTreble(level: Float) {
+    fun setBass(level: Float) { currentBass = level; applyEffects() }
+    fun setTreble(level: Float) { currentTreble = level; applyEffects() }
+    fun setHallEffect(level: Float) { currentHall = level; applyEffects() }
+    fun setVolumeBoost(level: Float) { currentVolumeBoost = level; applyEffects() }
+
+    private fun applyEffects() {
         try {
-            val bands = equalizer?.numberOfBands ?: return
-            if (bands > 0) {
-                val highestBand = (bands - 1).toShort()
-                val minEq = equalizer?.bandLevelRange?.get(0) ?: 0
-                val maxEq = equalizer?.bandLevelRange?.get(1) ?: 0
-                val targetLevel = minEq + ((maxEq - minEq) * (level / 100f)).toInt()
-                equalizer?.setBandLevel(highestBand, targetLevel.toShort())
+            if (!masterEnabled) {
+                equalizer?.enabled = false
+                bassBoost?.enabled = false
+                loudnessEnhancer?.enabled = false
+                virtualizer?.enabled = false
+                return
             }
-        } catch (e: Exception) {}
-    }
 
-    fun setHallEffect(level: Float) {
-        try {
-            virtualizer?.setStrength((level * 10).toInt().toShort())
-        } catch (e: Exception) {}
-    }
+            // Bass
+            if (currentBass > 0f) {
+                bassBoost?.enabled = true
+                bassBoost?.setStrength((currentBass * 10).toInt().toShort())
+            } else {
+                bassBoost?.enabled = false
+            }
 
-    fun setVolumeBoost(level: Float) {
-        try {
-            loudnessEnhancer?.setTargetGain((level * 20).toInt())
+            // Hall (Virtualizer)
+            if (currentHall > 0f) {
+                virtualizer?.enabled = true
+                virtualizer?.setStrength((currentHall * 10).toInt().toShort())
+            } else {
+                virtualizer?.enabled = false
+            }
+
+            // Volume Boost
+            if (currentVolumeBoost > 0f) {
+                loudnessEnhancer?.enabled = true
+                loudnessEnhancer?.setTargetGain((currentVolumeBoost * 20).toInt())
+            } else {
+                loudnessEnhancer?.enabled = false
+            }
+
+            // Treble / EQ
+            val bands = equalizer?.numberOfBands ?: 0
+            if (bands > 0) {
+                if (currentTreble == 50f) {
+                    equalizer?.enabled = false
+                } else {
+                    equalizer?.enabled = true
+                    val highestBand = (bands - 1).toShort()
+                    val minEq = equalizer?.bandLevelRange?.get(0) ?: 0
+                    val maxEq = equalizer?.bandLevelRange?.get(1) ?: 0
+                    val targetLevel = minEq + ((maxEq - minEq) * (currentTreble / 100f)).toInt()
+                    equalizer?.setBandLevel(highestBand, targetLevel.toShort())
+                }
+            }
         } catch (e: Exception) {}
     }
 

@@ -9,8 +9,6 @@ import android.os.ParcelUuid
 import android.util.Log
 import java.io.InputStream
 import java.io.OutputStream
-import java.lang.reflect.Constructor
-import java.lang.reflect.Method
 import java.util.UUID
 
 @SuppressLint("MissingPermission")
@@ -19,27 +17,8 @@ object AirPodsController {
     private val HFP_UUID: UUID = UUID.fromString("0000111e-0000-1000-8000-00805f9b34fb")
     private val FE01_UUID: UUID = UUID.fromString("fe010000-0000-1000-8000-00805f9b34fb")
 
-    private val HANDSHAKE = byteArrayOf(
-        0x00, 0x00, 0x04, 0x00, 0x01, 0x00, 0x02, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
-    )
-    private val SET_FEATURES = byteArrayOf(
-        0x04, 0x00, 0x04, 0x00, 0x4D, 0x00, 0xFF.toByte(), 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00
-    )
-    private val REQ_NOTIFICATIONS = byteArrayOf(
-        0x04, 0x00, 0x04, 0x00, 0x0F, 0x00, 0xFF.toByte(), 0xFF.toByte(), 0xFF.toByte(), 0xFF.toByte()
-    )
-
-    private fun getCleanAapAnc(mode: String): ByteArray {
-        val m1: Byte = when (mode) {
-            "Off" -> 0x01
-            "ANC" -> 0x02
-            "Transparency" -> 0x03
-            else -> 0x01
-        }
-        return byteArrayOf(0x04, 0x00, 0x04, 0x00, 0x09, 0x00, 0x0D, m1, 0x00, 0x00, 0x00)
-    }
+    private var persistentFe01: BluetoothSocket? = null
+    private var seqNum: Int = 1
 
     fun sendNoiseControlCommand(
         context: Context,
@@ -65,9 +44,9 @@ object AirPodsController {
                 } ?: bonded.firstOrNull() ?: return@Thread report("Error: No Earbuds found")
 
                 when (engine) {
-                    1 -> runEngine1MetaL2cap(device, mode, ::report)
-                    2 -> runEngine2HfpAtChannel(device, mode, ::report)
-                    3 -> runEngine3CleanFe01(device, mode, ::report)
+                    1 -> runEngine1JieLiFe01(device, mode, ::report)
+                    2 -> runEngine2StepByStepHfp(device, mode, ::report)
+                    3 -> runEngine3SocketInspector(device, mode, ::report)
                 }
             } catch (e: Exception) {
                 report("Error: ${e.message}")
@@ -75,221 +54,198 @@ object AirPodsController {
         }.start()
     }
 
-    private fun readReplyAsciiOrHex(inp: InputStream, waitMs: Long = 250): String {
+    private fun readAvail(inp: InputStream, waitMs: Long = 200): ByteArray {
         try {
             Thread.sleep(waitMs)
-            val avail = inp.available()
-            if (avail > 0) {
-                val buf = ByteArray(minOf(avail, 32))
-                val len = inp.read(buf)
-                val slice = buf.take(len).toByteArray()
-                val isPrintable = slice.all { it in 32..126 || it == 13.toByte() || it == 10.toByte() }
-                return if (isPrintable) {
-                    String(slice).replace("\r", "").replace("\n", " ").trim()
-                } else {
-                    slice.joinToString("") { "%02X".format(it) }
-                }
+            val av = inp.available()
+            if (av > 0) {
+                val b = ByteArray(minOf(av, 64))
+                val len = inp.read(b)
+                return b.take(len).toByteArray()
             }
         } catch (_: Exception) {}
-        return "None"
+        return ByteArray(0)
     }
 
-    // ENGINE 1: Meta-Reflection Bypass to force L2CAP 0x1001 & 74ec2172 Socket
-    private fun runEngine1MetaL2cap(device: BluetoothDevice, mode: String, report: (String) -> Unit) {
-        report("E1: Bypassing Android 16 Hidden API for L2CAP 0x1001...")
-        val errors = mutableListOf<String>()
+    private fun toHex(b: ByteArray): String =
+        if (b.isEmpty()) "None" else b.joinToString("") { "%02X".format(it) }
 
-        // Trick 1: Use Class.getDeclaredMethods via meta-reflection to find any socket creator
+    // ENGINE 1: Dedicated JieLi (0xFE01) RCSP & Dual-Mode Protocol on Ch10
+    private fun runEngine1JieLiFe01(device: BluetoothDevice, mode: String, report: (String) -> Unit) {
+        report("E1: Connecting to JieLi FE01 (Ch10)...")
         try {
-            val getDeclaredMethod = Class::class.java.getDeclaredMethod(
-                "getDeclaredMethod", String::class.java, arrayOf<Class<*>>()::class.java
-            )
-            for (mName in listOf("createL2capSocket", "createInsecureL2capSocket")) {
-                try {
-                    val m = getDeclaredMethod.invoke(
-                        BluetoothDevice::class.java,
-                        mName,
-                        arrayOf<Class<*>>(Int::class.javaPrimitiveType!!)
-                    ) as Method
-                    m.isAccessible = true
-                    val sock = m.invoke(device, 0x1001) as BluetoothSocket
-                    sock.connect()
-                    val out = sock.outputStream
-                    val inp = sock.inputStream
-                    out.write(HANDSHAKE); out.flush()
-                    val r1 = readReplyAsciiOrHex(inp, 300)
-                    out.write(SET_FEATURES); out.flush()
-                    Thread.sleep(100)
-                    out.write(REQ_NOTIFICATIONS); out.flush()
-                    Thread.sleep(100)
-                    out.write(getCleanAapAnc(mode)); out.flush()
-                    val r2 = readReplyAsciiOrHex(inp, 300)
-                    Thread.sleep(500)
-                    sock.close()
-                    report("E1 L2CAP 0x1001 SUCCESS! Rep: $r1 / $r2")
-                    return
-                } catch (e: Exception) {
-                    val cause = e.cause?.javaClass?.simpleName ?: e.javaClass.simpleName
-                    errors.add("$mName:$cause")
+            var sock = persistentFe01
+            if (sock == null || !sock.isConnected) {
+                sock = try {
+                    val m = device.javaClass.getMethod("createInsecureRfcommSocket", Int::class.javaPrimitiveType)
+                    m.invoke(device, 10) as BluetoothSocket
+                } catch (_: Exception) {
+                    device.createInsecureRfcommSocketToServiceRecord(FE01_UUID)
                 }
+                sock!!.connect()
+                persistentFe01 = sock
             }
-        } catch (e: Exception) {
-            errors.add("Meta:${e.javaClass.simpleName}")
-        }
 
-        // Trick 2: Meta-reflect BluetoothSocket all constructors & try TYPE_L2CAP (3) and TYPE_L2CAP_LE (4)
+            val out = sock.outputStream
+            val inp = sock.inputStream
+            readAvail(inp, 80) // flush old buffer
+
+            // JieLi ANC Modes: 0x00=Off, 0x01=ANC, 0x02=Transparency
+            val jlMode: Byte = when (mode) {
+                "Off" -> 0x00
+                "ANC" -> 0x01
+                "Transparency" -> 0x02
+                else -> 0x00
+            }
+            // Apple AAP Modes: 0x01=Off, 0x02=ANC, 0x03=Transparency
+            val aapMode: Byte = (jlMode + 1).toByte()
+            val seq = (seqNum++ and 0xFF).toByte()
+
+            // Packet A: JieLi RCSP Set-Sys-Info (Cmd 0x08, Attr 0x19 = ANC Mode)
+            val jlRcsp1 = byteArrayOf(
+                0xFE.toByte(), 0xDC.toByte(), 0xBA.toByte(),
+                0xC0.toByte(), 0x08, 0x00, 0x05,
+                seq, 0xFF.toByte(), 0xFF.toByte(), 0x19, jlMode,
+                0xEF.toByte()
+            )
+            // Packet B: JieLi RCSP Set-ANC-Info (Cmd 0x08, Mask=0x02, Type=0x01)
+            val jlRcsp2 = byteArrayOf(
+                0xFE.toByte(), 0xDC.toByte(), 0xBA.toByte(),
+                0xC0.toByte(), 0x08, 0x00, 0x04,
+                seq, 0x01, 0x19, jlMode,
+                0xEF.toByte()
+            )
+            // Packet C: Direct AAP ANC without Handshake (in case Ch10 expects direct AAP command)
+            val directAap = byteArrayOf(
+                0x04, 0x00, 0x04, 0x00, 0x09, 0x00, 0x0D, aapMode, 0x00, 0x00, 0x00
+            )
+
+            out.write(jlRcsp1); out.flush()
+            val r1 = toHex(readAvail(inp, 250))
+
+            out.write(jlRcsp2); out.flush()
+            val r2 = toHex(readAvail(inp, 250))
+
+            out.write(directAap); out.flush()
+            val r3 = toHex(readAvail(inp, 250))
+
+            report("E1 FE01 Sent $mode!\nR1:$r1\nR2:$r2\nR3:$r3")
+        } catch (e: Exception) {
+            try { persistentFe01?.close() } catch (_: Exception) {}
+            persistentFe01 = null
+            report("E1 FE01 Error: ${e.message}")
+        }
+    }
+
+    // ENGINE 2: Interactive HFP State-Machine on Ch4 + Apple AT+XAPL & Siri/ANC Commands
+    private fun runEngine2StepByStepHfp(device: BluetoothDevice, mode: String, report: (String) -> Unit) {
+        report("E2: Starting Interactive HFP Dialog on Ch4...")
+        var sock: BluetoothSocket? = null
         try {
-            val getCtors = Class::class.java.getDeclaredMethod("getDeclaredConstructors")
-            val ctors = getCtors.invoke(BluetoothSocket::class.java) as Array<*>
-            for (c in ctors) {
-                val ctor = c as Constructor<*>
-                ctor.isAccessible = true
-                val pTypes = ctor.parameterTypes
-                if (pTypes.size == 7) {
-                    for (type in listOf(3, 1)) { // 3 = L2CAP, 1 = RFCOMM with AAP_UUID
-                        try {
-                            val psmOrCh = if (type == 3) 0x1001 else -1
-                            val uuidArg = if (type == 3) null else ParcelUuid(AAP_UUID)
-                            val sock = ctor.newInstance(type, -1, false, false, device, psmOrCh, uuidArg) as BluetoothSocket
-                            sock.connect()
-                            val out = sock.outputStream
-                            val inp = sock.inputStream
-                            out.write(HANDSHAKE); out.flush()
-                            val r1 = readReplyAsciiOrHex(inp, 300)
-                            out.write(getCleanAapAnc(mode)); out.flush()
-                            val r2 = readReplyAsciiOrHex(inp, 300)
-                            Thread.sleep(500)
-                            sock.close()
-                            report("E1 Ctor(type=$type) SUCCESS! Rep: $r1 / $r2")
-                            return
-                        } catch (e: Exception) {
-                            val msg = (e.cause?.message ?: e.message ?: "err").take(20)
-                            errors.add("T$type:$msg")
-                        }
+            val m = device.javaClass.getMethod("createInsecureRfcommSocket", Int::class.javaPrimitiveType)
+            sock = m.invoke(device, 4) as BluetoothSocket
+            sock.connect()
+            val out = sock.outputStream
+            val inp = sock.inputStream
+
+            val logBuilder = StringBuilder()
+
+            // Step-by-step respond to up to 6 AT commands from the earbuds
+            for (step in 1..6) {
+                val raw = readAvail(inp, 220)
+                if (raw.isEmpty()) break
+                val cmd = String(raw).trim()
+                logBuilder.append("[${cmd.replace("\r", "").replace("\n", " ")}] ")
+
+                val reply = when {
+                    cmd.contains("AT+BRSF") -> "\r\n+BRSF: 4095\r\n\r\nOK\r\n"
+                    cmd.contains("AT+BAC") -> "\r\nOK\r\n"
+                    cmd.contains("AT+CIND=?") -> "\r\n+CIND: (\"service\",(0,1)),(\"call\",(0,1)),(\"callsetup\",(0,3)),(\"callheld\",(0,2)),(\"signal\",(0-5)),(\"roam\",(0,1)),(\"battchg\",(0-5))\r\n\r\nOK\r\n"
+                    cmd.contains("AT+CIND?") -> "\r\n+CIND: 1,0,0,0,5,0,5\r\n\r\nOK\r\n"
+                    cmd.contains("AT+CMER") -> "\r\nOK\r\n"
+                    cmd.contains("AT+CHLD=?") -> "\r\n+CHLD: (0,1,2,3)\r\n\r\nOK\r\n"
+                    cmd.contains("AT+XAPL") -> "\r\n+XAPL=iPhone,7\r\n\r\nOK\r\n"
+                    else -> "\r\nOK\r\n"
+                }
+                out.write(reply.toByteArray())
+                out.flush()
+            }
+
+            // Now send Apple Accessory & ANC commands over unlocked HFP session
+            val m0 = when (mode) { "Off" -> 0; "ANC" -> 1; "Transparency" -> 2; else -> 0 }
+            val m1 = m0 + 1
+
+            val pushCmds = listOf(
+                "\r\n+XAPL=iPhone,7\r\n",
+                "AT+XANC=$m1\r\n",
+                "\r\n+XANC: $m1\r\n",
+                "\r\n+ANC: $m0\r\n",
+                "AT+APANC=$m1\r\n"
+            )
+            var podResp = ""
+            for (c in pushCmds) {
+                out.write(c.toByteArray())
+                out.flush()
+                val r = readAvail(inp, 150)
+                if (r.isNotEmpty()) podResp += String(r).trim() + " "
+            }
+
+            Thread.sleep(600)
+            sock.close()
+            report("E2 HFP Dialog: $logBuilder\nPodResp: ${if (podResp.isEmpty()) "Silent" else podResp}")
+        } catch (e: Exception) {
+            try { sock?.close() } catch (_: Exception) {}
+            report("E2 Error: ${e.message}")
+        }
+    }
+
+    // ENGINE 3: Inspect BluetoothSocket Constructors & Test Direct L2CAP (Type=3) + BLE L2CAP (Type=4)
+    private fun runEngine3SocketInspector(device: BluetoothDevice, mode: String, report: (String) -> Unit) {
+        report("E3: Testing Direct BluetoothSocket L2CAP Constructors...")
+        val outLogs = mutableListOf<String>()
+
+        val m1: Byte = when (mode) { "Off" -> 0x01; "ANC" -> 0x02; "Transparency" -> 0x03; else -> 0x01 }
+        val handshake = byteArrayOf(0x00, 0x00, 0x04, 0x00, 0x01, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00)
+        val ancPkt = byteArrayOf(0x04, 0x00, 0x04, 0x00, 0x09, 0x00, 0x0D, m1, 0x00, 0x00, 0x00)
+
+        try {
+            val ctors = BluetoothSocket::class.java.declaredConstructors
+            outLogs.add("Ctors:${ctors.size}")
+
+            val ctor7 = ctors.firstOrNull { it.parameterTypes.size == 7 }
+            if (ctor7 != null) {
+                ctor7.isAccessible = true
+                // Try Type 3 (L2CAP Classic PSM 0x1001), Type 4 (L2CAP LE), Type 1 (RFCOMM AAP_UUID)
+                val attempts = listOf(
+                    Triple("L2CAP-1001", 3, 0x1001),
+                    Triple("L2CAP-1003", 3, 0x1003),
+                    Triple("RF-AAP", 1, -1)
+                )
+                for ((label, type, port) in attempts) {
+                    try {
+                        val uuidArg = if (type == 1) ParcelUuid(AAP_UUID) else null
+                        val sock = ctor7.newInstance(type, -1, false, false, device, port, uuidArg) as BluetoothSocket
+                        sock.connect()
+                        val os = sock.outputStream
+                        val ins = sock.inputStream
+                        os.write(handshake); os.flush()
+                        val r1 = toHex(readAvail(ins, 250))
+                        os.write(ancPkt); os.flush()
+                        val r2 = toHex(readAvail(ins, 250))
+                        Thread.sleep(500)
+                        sock.close()
+                        report("E3 $label CONNECTED!\nR1:$r1\nR2:$r2")
+                        return
+                    } catch (e: Exception) {
+                        val msg = e.cause?.message ?: e.message ?: e.javaClass.simpleName
+                        outLogs.add("$label:${msg.take(28)}")
                     }
                 }
             }
         } catch (e: Exception) {
-            errors.add("CtorMeta:${e.javaClass.simpleName}")
+            outLogs.add("Err:${e.message}")
         }
 
-        report("E1 Blocked: ${errors.distinct().joinToString(" | ")}")
-    }
-
-    // ENGINE 2: Ch4 (0000111e) Interactive HFP Handshake + Apple/Clone AT ANC Commands
-    private fun runEngine2HfpAtChannel(device: BluetoothDevice, mode: String, report: (String) -> Unit) {
-        report("E2: Connecting to Ch4 (HFP AT Channel)...")
-        var sock: BluetoothSocket? = null
-        try {
-            sock = try {
-                device.createInsecureRfcommSocketToServiceRecord(HFP_UUID)
-            } catch (_: Exception) {
-                val m = device.javaClass.getMethod("createInsecureRfcommSocket", Int::class.javaPrimitiveType)
-                m.invoke(device, 4) as BluetoothSocket
-            }
-            sock!!.connect()
-            val out = sock.outputStream
-            val inp = sock.inputStream
-
-            // 1. Read initial AT+BRSF=... from Earbuds
-            val initReq = readReplyAsciiOrHex(inp, 250)
-            Log.d("AirPodsController", "Ch4 Init: $initReq")
-
-            // 2. Complete HFP Handshake so Earbuds accept vendor commands!
-            val hfpReplies = listOf(
-                "\r\n+BRSF: 1023\r\n\r\nOK\r\n",
-                "\r\n+CIND: (\"service\",(0,1)),(\"call\",(0,1)),(\"callsetup\",(0,3))\r\n\r\nOK\r\n",
-                "\r\n+CIND: 1,0,0\r\n\r\nOK\r\n",
-                "\r\nOK\r\n"
-            )
-            for (rep in hfpReplies) {
-                out.write(rep.toByteArray())
-                out.flush()
-                readReplyAsciiOrHex(inp, 120)
-            }
-
-            // 3. Now send Apple & Clone AT ANC Commands!
-            val mNum = when (mode) {
-                "Off" -> 0
-                "ANC" -> 1
-                "Transparency" -> 2
-                else -> 0
-            }
-            val mAap = mNum + 1 // 1=Off, 2=ANC, 3=Trans
-
-            val atCommands = listOf(
-                "AT+XANC=$mNum\r\n",
-                "AT+XANC=$mAap\r\n",
-                "AT+ANC=$mNum\r\n",
-                "AT+ANC=$mAap\r\n",
-                "AT+APANC=$mAap\r\n",
-                "\r\n+XANC: $mNum\r\n",
-                "\r\n+ANC: $mNum\r\n"
-            )
-
-            var lastRep = ""
-            for (cmd in atCommands) {
-                out.write(cmd.toByteArray())
-                out.flush()
-                val r = readReplyAsciiOrHex(inp, 120)
-                if (r != "None") lastRep = r
-            }
-
-            // Also send clean AAP binary packet after AT handshake just in case
-            out.write(HANDSHAKE); out.flush(); Thread.sleep(100)
-            out.write(getCleanAapAnc(mode)); out.flush()
-            val rBin = readReplyAsciiOrHex(inp, 200)
-
-            Thread.sleep(400)
-            sock.close()
-            report("E2 Ch4 Done! Init:[$initReq] LastRep:[$lastRep / $rBin]")
-        } catch (e: Exception) {
-            try { sock?.close() } catch (_: Exception) {}
-            report("E2 Ch4 Error: ${e.message}")
-        }
-    }
-
-    // ENGINE 3: Clean Single-Protocol Send on fe010000 (Ch10) with Proper Delays
-    private fun runEngine3CleanFe01(device: BluetoothDevice, mode: String, report: (String) -> Unit) {
-        report("E3: Connecting to fe010000 (Ch10) cleanly...")
-        var sock: BluetoothSocket? = null
-        try {
-            sock = try {
-                device.createInsecureRfcommSocketToServiceRecord(FE01_UUID)
-            } catch (_: Exception) {
-                val m = device.javaClass.getMethod("createInsecureRfcommSocket", Int::class.javaPrimitiveType)
-                m.invoke(device, 10) as BluetoothSocket
-            }
-            sock!!.connect()
-            val out = sock.outputStream
-            val inp = sock.inputStream
-
-            // Clear any existing bytes
-            readReplyAsciiOrHex(inp, 100)
-
-            // Step 1: Send ONLY Handshake and wait 400ms
-            out.write(HANDSHAKE)
-            out.flush()
-            val r1 = readReplyAsciiOrHex(inp, 400)
-
-            // Step 2: Send ONLY Set Features and wait 300ms
-            out.write(SET_FEATURES)
-            out.flush()
-            val r2 = readReplyAsciiOrHex(inp, 300)
-
-            // Step 3: Send ONLY Clean 11-byte AAP ANC packet (no mixed protocols!)
-            val ancPkt = getCleanAapAnc(mode)
-            out.write(ancPkt)
-            out.flush()
-            val r3 = readReplyAsciiOrHex(inp, 500)
-
-            // Keep socket open for 1.5 seconds so earbuds don't reset state
-            Thread.sleep(1500)
-            sock.close()
-            report("E3 Clean fe01 Sent! R1:${r1.take(10)} R3:${r3.take(16)}")
-        } catch (e: Exception) {
-            try { sock?.close() } catch (_: Exception) {}
-            report("E3 fe01 Error: ${e.message}")
-        }
+        report("E3 Results:\n" + outLogs.joinToString("\n"))
     }
 }

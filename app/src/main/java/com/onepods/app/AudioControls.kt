@@ -1,6 +1,5 @@
 package com.onepods.app
 
-import android.widget.Toast
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
@@ -25,6 +24,7 @@ fun AudioControls() {
     
     var noiseControl by remember { mutableStateOf("Off") }
     var activeEngine by remember { mutableIntStateOf(1) }
+    var ancStatus by remember { mutableStateOf("Select Engine 1, 2 or 3 and tap ANC/Transparency") }
 
     val presets = listOf("Bass Boost", "Treble", "Balanced", "Rock", "Pop", "Classic", "Vocal")
     val noiseModes = listOf("ANC", "Off", "Transparency")
@@ -37,7 +37,7 @@ fun AudioControls() {
         
         // ENGINE SELECTOR UI
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            listOf(1 to "Engine 1", 2 to "Engine 2", 3 to "Engine 3").forEach { (num, name) ->
+            listOf(1 to "E1: L2CAP", 2 to "E2: RFCOMM", 3 to "E3: BLE").forEach { (num, name) ->
                 FilterChip(
                     selected = activeEngine == num,
                     onClick = { activeEngine = num },
@@ -58,8 +58,10 @@ fun AudioControls() {
                 Button(
                     onClick = { 
                         noiseControl = mode 
-                        Toast.makeText(context, "Testing E$activeEngine: $mode", Toast.LENGTH_SHORT).show()
-                        AirPodsController.sendNoiseControlCommand(context, mode, activeEngine)
+                        ancStatus = "Running Engine $activeEngine for $mode..."
+                        AirPodsController.sendNoiseControlCommand(context, mode, activeEngine) { status ->
+                            ancStatus = status
+                        }
                     },
                     modifier = Modifier.weight(1f).height(48.dp),
                     shape = RoundedCornerShape(12.dp),
@@ -73,6 +75,13 @@ fun AudioControls() {
                 }
             }
         }
+
+        // LIVE DEBUG STATUS TEXT
+        Text(
+            text = "Status: $ancStatus",
+            color = Accent,
+            fontSize = 11.sp
+        )
 
         Spacer(modifier = Modifier.height(4.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {

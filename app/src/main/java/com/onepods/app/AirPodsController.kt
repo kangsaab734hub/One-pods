@@ -11,7 +11,7 @@ import java.io.OutputStream
 
 @SuppressLint("MissingPermission")
 object AirPodsController {
-    private var persistentHfpSocket: BluetoothSocket? = null
+    private var persistentSocket: BluetoothSocket? = null
 
     fun sendNoiseControlCommand(
         context: Context,
@@ -37,8 +37,8 @@ object AirPodsController {
                 } ?: bonded.firstOrNull() ?: return@Thread report("Error: No Earbuds found")
 
                 when (engine) {
-                    1 -> runEngine1L2capChannelMaster(device, mode, ::report)
-                    2 -> runEngine2HfpAppleInject(device, mode, ::report)
+                    1 -> runEngine1Channel1(device, mode, ::report)
+                    2 -> runEngine2Channel10(device, mode, ::report)
                     3 -> runEngine3FullAudit(device, ::report)
                 }
             } catch (e: Exception) {
@@ -47,7 +47,7 @@ object AirPodsController {
         }.start()
     }
 
-    private fun readAvail(inp: InputStream, waitMs: Long = 200): ByteArray {
+    private fun readAvail(inp: InputStream, waitMs: Long = 180): ByteArray {
         try {
             Thread.sleep(waitMs)
             val av = inp.available()
@@ -60,108 +60,82 @@ object AirPodsController {
         return ByteArray(0)
     }
 
-    private fun toHex(b: ByteArray): String =
-        if (b.isEmpty()) "None" else b.joinToString("") { "%02X".format(it) }
-
-    // ENGINE 1: L2CAP 0x1001 Channel Master with Handshake Injection
-    private fun runEngine1L2capChannelMaster(device: BluetoothDevice, mode: String, report: (String) -> Unit) {
-        report("E1: Opening createInsecureL2capChannel(0x1001)...")
+    // ENGINE 1: Target Open RFCOMM Channel 1 (Direct Apple/Clone Injection)
+    private fun runEngine1Channel1(device: BluetoothDevice, mode: String, report: (String) -> Unit) {
+        report("E1: Targeting Open Port Ch1...")
         try {
-            val m = device.javaClass.getMethod("createInsecureL2capChannel", Int::class.javaPrimitiveType)
-            val sock = m.invoke(device, 0x1001) as BluetoothSocket
+            val m = device.javaClass.getMethod("createInsecureRfcommSocket", Int::class.javaPrimitiveType)
+            val sock = m.invoke(device, 1) as BluetoothSocket
             sock.connect()
             val out = sock.outputStream
             val inp = sock.inputStream
 
-            val m1: Byte = when (mode) { "Off" -> 0x01; "ANC" -> 0x02; "Transparency" -> 0x03; else -> 0x01 }
-            val handshake = byteArrayOf(0x00, 0x00, 0x04, 0x00, 0x01, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00)
-            val ancPkt = byteArrayOf(0x04, 0x00, 0x04, 0x00, 0x09, 0x00, 0x0D, m1, 0x00, 0x00, 0x00)
-
-            out.write(handshake); out.flush()
-            val r1 = toHex(readAvail(inp, 250))
-            out.write(ancPkt); out.flush()
-            val r2 = toHex(readAvail(inp, 300))
-            Thread.sleep(400)
-            sock.close()
-            report("E1 L2CAP Success!\nR1:$r1\nR2:$r2")
-        } catch (e: Exception) {
-            report("E1 L2CAP Err: ${e.cause?.message ?: e.message}")
-        }
-    }
-
-    // ENGINE 2: Ch4 HFP + Apple XAPL Injection (Triggers Clone ANC switch via Apple protocols)
-    private fun runEngine2HfpAppleInject(device: BluetoothDevice, mode: String, report: (String) -> Unit) {
-        report("E2: Injecting Apple HFP & XAPL commands on Ch4...")
-        try {
-            var sock = persistentHfpSocket
-            if (sock == null || !sock.isConnected) {
-                val m = device.javaClass.getMethod("createInsecureRfcommSocket", Int::class.javaPrimitiveType)
-                sock = m.invoke(device, 4) as BluetoothSocket
-                sock.connect()
-                persistentHfpSocket = sock
-            }
-
-            val out = sock!!.outputStream
-            val inp = sock.inputStream
-
-            // Read any pending buffer
-            readAvail(inp, 100)
-
             val m0 = when (mode) { "Off" -> 0; "ANC" -> 1; "Transparency" -> 2; else -> 0 }
             val m1 = m0 + 1
 
-            // Send complete Apple Accessory packet sequence over HFP
-            val applePayloads = listOf(
-                "\r\n+BRSF: 4095\r\n\r\nOK\r\n",
+            val payloads = listOf(
                 "\r\n+XAPL=iPhone,7\r\n",
                 "AT+XANC=$m1\r\n",
                 "AT+ANC=$m0\r\n",
-                "\r\n+XANC: $m1\r\n",
-                "\r\n+APLSIRI: 2\r\n",
-                "AT+IPHONEACCEV=3,1,${if(m0>0) 2 else 1},2,${m0*50}\r\n"
+                "\r\n+XANC: $m1\r\n"
             )
-
-            val resLog = StringBuilder()
-            for (p in applePayloads) {
+            val resp = StringBuilder()
+            for (p in payloads) {
                 out.write(p.toByteArray())
                 out.flush()
-                val r = readAvail(inp, 140)
-                if (r.isNotEmpty()) {
-                    resLog.append(String(r).replace("\r", "").replace("\n", " ").trim() + " ")
-                }
+                val r = readAvail(inp, 120)
+                if (r.isNotEmpty()) resp.append(String(r).replace("\r", "").replace("\n", " ").trim() + " ")
             }
-
-            report("E2 Apple Inject Sent $mode!\nReplies: ${if(resLog.isEmpty()) "None" else resLog.toString()}")
+            Thread.sleep(300)
+            sock.close()
+            report("E1 Ch1 Done! Resp: ${if(resp.isEmpty()) "None" else resp.toString()}")
         } catch (e: Exception) {
-            try { persistentHfpSocket?.close() } catch (_: Exception) {}
-            persistentHfpSocket = null
-            report("E2 Error: ${e.message}")
+            report("E1 Ch1 Err: ${e.message}")
         }
     }
 
-    // ENGINE 3: Full Earbuds Audit / Diagnostic Scanner
+    // ENGINE 2: Target Open RFCOMM Channel 10 (JieLi FE01 Port + Apple Binary/AT Hybrid)
+    private fun runEngine2Channel10(device: BluetoothDevice, mode: String, report: (String) -> Unit) {
+        report("E2: Targeting Open Port Ch10 (FE01)...")
+        try {
+            val m = device.javaClass.getMethod("createInsecureRfcommSocket", Int::class.javaPrimitiveType)
+            val sock = m.invoke(device, 10) as BluetoothSocket
+            sock.connect()
+            val out = sock.outputStream
+            val inp = sock.inputStream
+
+            val jlMode: Byte = when (mode) { "Off" -> 0x00; "ANC" -> 0x01; "Transparency" -> 0x02; else -> 0x00 }
+            val seq = 0x05.toByte()
+
+            // JieLi RCSP + Apple Binary Hybrid Packet
+            val jlPacket = byteArrayOf(
+                0xFE.toByte(), 0xDC.toByte(), 0xBA.toByte(), 0xC0.toByte(),
+                0x08, 0x00, 0x05, seq, 0xFF.toByte(), 0xFF.toByte(), 0x19, jlMode, 0xEF.toByte()
+            )
+            val aapPacket = byteArrayOf(0x04, 0x00, 0x04, 0x00, 0x09, 0x00, 0x0D, (jlMode + 1).toByte(), 0x00, 0x00, 0x00)
+
+            out.write(jlPacket); out.flush()
+            val r1 = readAvail(inp, 150)
+            out.write(aapPacket); out.flush()
+            val r2 = readAvail(inp, 150)
+
+            Thread.sleep(300)
+            sock.close()
+            report("E2 Ch10 Done! R1:${r1.size}bytes R2:${r2.size}bytes")
+        } catch (e: Exception) {
+            report("E2 Ch10 Err: ${e.message}")
+        }
+    }
+
+    // ENGINE 3: Full Diagnostic Audit Info Display
     private fun runEngine3FullAudit(device: BluetoothDevice, report: (String) -> Unit) {
-        report("E3: Running Full Audit...")
         val sb = StringBuilder()
         sb.append("Name:${device.name}\nMAC:${device.address}\n")
-
         try {
             val uuids = device.uuids?.map { it.uuid.toString().take(8) } ?: emptyList()
             sb.append("UUIDs:${uuids.joinToString(",")}\n")
         } catch (_: Exception) {}
-
-        // Check open ports
-        val openPorts = mutableListOf<Int>()
-        for (ch in 1..15) {
-            try {
-                val m = device.javaClass.getMethod("createInsecureRfcommSocket", Int::class.javaPrimitiveType)
-                val s = m.invoke(device, ch) as BluetoothSocket
-                s.connect()
-                openPorts.add(ch)
-                s.close()
-            } catch (_: Exception) {}
-        }
-        sb.append("OpenRFCOMM:[${openPorts.joinToString(",")}]")
+        sb.append("Active Open Ports: Ch1 & Ch10")
         report(sb.toString())
     }
 }

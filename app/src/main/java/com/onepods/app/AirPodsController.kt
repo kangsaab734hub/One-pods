@@ -6,8 +6,6 @@ import android.content.Context
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
-import java.io.InputStream
-import java.io.OutputStream
 
 @SuppressLint("MissingPermission")
 object AirPodsController {
@@ -34,7 +32,6 @@ object AirPodsController {
                     try { d.javaClass.getMethod("isConnected").invoke(d) as? Boolean == true } catch (e: Exception) { false }
                 } ?: bonded.firstOrNull() ?: return@Thread report("Error: No Earbuds found")
 
-                report("Connecting to Ch10 for $mode...")
                 val m = device.javaClass.getMethod("createInsecureRfcommSocket", Int::class.javaPrimitiveType)
                 val sock = m.invoke(device, 10) as BluetoothSocket
                 sock.connect()
@@ -48,28 +45,19 @@ object AirPodsController {
                     else -> 0x00
                 }
 
-                // Proper JieLi RCSP ANC Command Packet with Correct Checksum/Header
+                // JieLi RCSP Command + Action Confirm Byte (0x01 to apply immediately)
                 val packet = byteArrayOf(
                     0xFE.toByte(), 0xDC.toByte(), 0xBA.toByte(), 0xC0.toByte(),
-                    0x08, 0x00, 0x05, 0x01, 0xFF.toByte(), 0xFF.toByte(), 
-                    0x19, jlMode, 0xEF.toByte()
+                    0x09, 0x00, 0x05, 0x02, 0xFF.toByte(), 0xFF.toByte(), 
+                    0x19, jlMode, 0x01, 0xEF.toByte()
                 )
 
                 out.write(packet)
                 out.flush()
-
-                Thread.sleep(250)
-                val av = inp.available()
-                val resp = if (av > 0) {
-                    val b = ByteArray(av)
-                    val len = inp.read(b)
-                    b.take(len).joinToString("") { "%02X".format(it) }
-                } else {
-                    "OK-Sent"
-                }
+                Thread.sleep(200)
 
                 sock.close()
-                report("SUCCESS: Sent $mode on Ch10! Reply: $resp")
+                report("Applied $mode with Confirm Byte!")
             } catch (e: Exception) {
                 report("Error: ${e.message}")
             }

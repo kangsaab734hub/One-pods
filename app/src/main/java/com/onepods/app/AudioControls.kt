@@ -38,7 +38,8 @@ fun AudioControls() {
                 Button(
                     onClick = { 
                         noiseControl = mode 
-                        Toast.makeText(context, "Switching to $mode...", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(context, "Sending $mode signal...", Toast.LENGTH_SHORT).show()
+                        AirPodsController.sendNoiseControlCommand(context, mode)
                     },
                     modifier = Modifier.weight(1f).height(48.dp),
                     shape = RoundedCornerShape(12.dp),
@@ -64,11 +65,11 @@ fun AudioControls() {
         
         Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(0.dp)) {
             Text("Bass  ${bass.toInt()}%", color = if(eqEnabled) Color.LightGray else Color.DarkGray, fontSize = 12.sp)
-            Slider(value = bass, onValueChange = { bass = it; AudioEngine.setBass(it) }, valueRange = 0f..100f, 
+            Slider(value = bass, onValueChange = { bass = it; AudioEngine.setBass(it); preset = "Custom" }, valueRange = 0f..100f, 
                 enabled = eqEnabled, colors = SliderDefaults.colors(thumbColor = Accent, activeTrackColor = Accent))
             
             Text("Treble  ${treble.toInt()}%", color = if(eqEnabled) Color.LightGray else Color.DarkGray, fontSize = 12.sp)
-            Slider(value = treble, onValueChange = { treble = it; AudioEngine.setTreble(it) }, valueRange = 0f..100f,
+            Slider(value = treble, onValueChange = { treble = it; AudioEngine.setTreble(it); preset = "Custom" }, valueRange = 0f..100f,
                 enabled = eqEnabled, colors = SliderDefaults.colors(thumbColor = Accent, activeTrackColor = Accent))
             
             Text("Volume Boost  ${volumeBoost.toInt()}%", color = if(eqEnabled) Color.LightGray else Color.DarkGray, fontSize = 12.sp)
@@ -84,7 +85,22 @@ fun AudioControls() {
                     val selected = preset == item
                     FilterChip(
                         selected = selected,
-                        onClick = { preset = item },
+                        onClick = { 
+                            if(eqEnabled) {
+                                preset = item 
+                                when(item) {
+                                    "Balanced" -> { bass = 0f; treble = 50f }
+                                    "Bass Boost" -> { bass = 80f; treble = 50f }
+                                    "Treble" -> { bass = 0f; treble = 80f }
+                                    "Rock" -> { bass = 60f; treble = 70f }
+                                    "Pop" -> { bass = 40f; treble = 60f }
+                                    "Classic" -> { bass = 20f; treble = 40f }
+                                    "Vocal" -> { bass = 10f; treble = 80f }
+                                }
+                                AudioEngine.setBass(bass)
+                                AudioEngine.setTreble(treble)
+                            }
+                        },
                         label = { Text(item, fontSize = 12.sp) },
                         enabled = eqEnabled,
                         colors = FilterChipDefaults.filterChipColors(

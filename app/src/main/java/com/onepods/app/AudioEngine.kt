@@ -1,13 +1,11 @@
 package com.onepods.app
 
-import android.media.audiofx.BassBoost
 import android.media.audiofx.Equalizer
 import android.media.audiofx.LoudnessEnhancer
 import android.util.Log
 
 object AudioEngine {
     private var equalizer: Equalizer? = null
-    private var bassBoost: BassBoost? = null
     private var loudnessEnhancer: LoudnessEnhancer? = null
     
     private var masterEnabled = false
@@ -18,7 +16,6 @@ object AudioEngine {
     fun initAudioEffects() {
         try {
             equalizer = Equalizer(0, 0)
-            bassBoost = BassBoost(0, 0)
             loudnessEnhancer = LoudnessEnhancer(0)
         } catch (e: Exception) {
             Log.e("AudioEngine", "Error: ${e.message}")
@@ -34,20 +31,11 @@ object AudioEngine {
         try {
             if (!masterEnabled) {
                 equalizer?.enabled = false
-                bassBoost?.enabled = false
                 loudnessEnhancer?.enabled = false
                 return
             }
 
-            // 1. PURE OLD BASS (Purana best system, koi dhakkan nahi)
-            if (currentBass > 0f) {
-                bassBoost?.enabled = true
-                bassBoost?.setStrength((currentBass * 10).toInt().toShort())
-            } else {
-                bassBoost?.enabled = false
-            }
-
-            // 2. VOLUME BOOST
+            // VOLUME BOOST
             if (currentVolumeBoost > 0f) {
                 loudnessEnhancer?.enabled = true
                 loudnessEnhancer?.setTargetGain((currentVolumeBoost * 20).toInt())
@@ -55,13 +43,37 @@ object AudioEngine {
                 loudnessEnhancer?.enabled = false
             }
 
-            // 3. TREBLE
+            // PURE NATURAL EQ (Ghatiya BassBoost engine delete kar diya)
             val bands = equalizer?.numberOfBands ?: 0
-            if (currentTreble != 50f && bands > 0) {
+            if ((currentBass > 0f || currentTreble != 50f) && bands > 0) {
                 equalizer?.enabled = true
                 val maxEq = equalizer?.bandLevelRange?.get(1) ?: 0
-                val trebleGain = (((currentTreble - 50f) / 50f) * maxEq).toInt().toShort()
-                equalizer?.setBandLevel((bands - 1).toShort(), trebleGain)
+
+                // Sabse pehle saare bands ko neutral (0) rakho taaki original song kharab na ho
+                for (i in 0 until bands) {
+                    equalizer?.setBandLevel(i.toShort(), 0)
+                }
+
+                // 1. PURE BASS BOOST (Sirf Base frequency ko natural tareeke se badhayenge)
+                if (currentBass > 0f) {
+                    val bassGain = ((currentBass / 100f) * maxEq).toInt().toShort()
+                    // Band 0 (Deep Sub-bass)
+                    equalizer?.setBandLevel(0.toShort(), bassGain) 
+                    // Band 1 (Mid-bass / Punch) - Isey thoda kam rakhenge taaki awaaz fate na
+                    if (bands > 1) {
+                        equalizer?.setBandLevel(1.toShort(), (bassGain * 0.6).toInt().toShort()) 
+                    }
+                }
+
+                // 2. NATURAL TREBLE
+                if (currentTreble != 50f) {
+                    val trebleGain = (((currentTreble - 50f) / 50f) * maxEq).toInt().toShort()
+                    equalizer?.setBandLevel((bands - 1).toShort(), trebleGain)
+                    if (bands > 2) {
+                        equalizer?.setBandLevel((bands - 2).toShort(), (trebleGain * 0.5).toInt().toShort())
+                    }
+                }
+
             } else {
                 equalizer?.enabled = false
             }
@@ -72,7 +84,6 @@ object AudioEngine {
     fun release() {
         try {
             equalizer?.release()
-            bassBoost?.release()
             loudnessEnhancer?.release()
         } catch (e: Exception) {}
     }

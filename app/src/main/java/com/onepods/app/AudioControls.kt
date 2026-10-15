@@ -22,7 +22,9 @@ fun AudioControls() {
     var treble by remember { mutableFloatStateOf(50f) }
     var volumeBoost by remember { mutableFloatStateOf(0f) }
     var preset by remember { mutableStateOf("Balanced") }
+    
     var noiseControl by remember { mutableStateOf("Off") }
+    var activeEngine by remember { mutableIntStateOf(1) }
 
     val presets = listOf("Bass Boost", "Treble", "Balanced", "Rock", "Pop", "Classic", "Vocal")
     val noiseModes = listOf("ANC", "Off", "Transparency")
@@ -32,14 +34,32 @@ fun AudioControls() {
     Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         
         Text("NOISE CONTROL", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp)
+        
+        // ENGINE SELECTOR UI
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf(1 to "Engine 1", 2 to "Engine 2", 3 to "Engine 3").forEach { (num, name) ->
+                FilterChip(
+                    selected = activeEngine == num,
+                    onClick = { activeEngine = num },
+                    label = { Text(name, fontSize = 12.sp) },
+                    colors = FilterChipDefaults.filterChipColors(
+                        containerColor = CardBg,
+                        labelColor = Color.LightGray,
+                        selectedContainerColor = Accent.copy(alpha = 0.2f),
+                        selectedLabelColor = Accent
+                    )
+                )
+            }
+        }
+
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             noiseModes.forEach { mode ->
                 val selected = noiseControl == mode
                 Button(
                     onClick = { 
                         noiseControl = mode 
-                        Toast.makeText(context, "Sending $mode signal...", Toast.LENGTH_SHORT).show()
-                        AirPodsController.sendNoiseControlCommand(context, mode)
+                        Toast.makeText(context, "Testing E$activeEngine: $mode", Toast.LENGTH_SHORT).show()
+                        AirPodsController.sendNoiseControlCommand(context, mode, activeEngine)
                     },
                     modifier = Modifier.weight(1f).height(48.dp),
                     shape = RoundedCornerShape(12.dp),

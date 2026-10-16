@@ -140,11 +140,8 @@ object AirPodsController {
         val logs = mutableListOf<String>()
 
         // Inspect exact parameter types of all 7 constructors so we call the right signature
-        val ctors = HiddenApiBypass.getDeclaredConstructors(BluetoothSocket::class.java)
-        val sigs = ctors.map { c ->
-            (c as java.lang.reflect.Constructor<*>).parameterTypes.joinToString(",") { it.simpleName.take(3) }
-        }
-        logs.add("Sigs:${sigs.size}")
+        val ctors = BluetoothSocket::class.java.declaredConstructors
+        logs.add("Sigs:${ctors.size}")
 
         // Try creating socket via HiddenApiBypass.newInstance for L2CAP (type=3) & RFCOMM AAP (type=1)
         val attempts = listOf(

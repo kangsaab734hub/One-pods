@@ -48,17 +48,22 @@ object AirPodsController {
             "Off" -> 0x01
             "ANC" -> 0x02
             "Transparency" -> 0x03
-            else -> 0x01
+            else -> 0x02
         }
-        val m0: Byte = (m1 - 1).toByte()
         return listOf(
-            // Standard 11-byte Apple AAP ANC
             byteArrayOf(0x04, 0x00, 0x04, 0x00, 0x09, 0x00, 0x0D, m1, 0x00, 0x00, 0x00),
-            // Short 8-byte Apple AAP ANC
-            byteArrayOf(0x04, 0x00, 0x04, 0x00, 0x09, 0x00, 0x0D, m1),
-            // JieLi RCSP ANC
-            byteArrayOf(0xFE.toByte(), 0xDC.toByte(), 0xBA.toByte(), 0xC0.toByte(), 0x08, 0x00, 0x05, 0x01, 0xFF.toByte(), 0xFF.toByte(), 0x19, m0, 0xEF.toByte())
+            byteArrayOf(0x04, 0x00, 0x04, 0x00, 0x09, 0x00, 0x0D, m1)
         )
+    }
+
+    fun saveLastMode(context: Context, mode: String) {
+        context.getSharedPreferences("airpods_prefs", Context.MODE_PRIVATE)
+            .edit().putString("last_mode", mode).apply()
+    }
+
+    fun getLastMode(context: Context): String {
+        return context.getSharedPreferences("airpods_prefs", Context.MODE_PRIVATE)
+            .getString("last_mode", "ANC") ?: "ANC"
     }
 
     fun sendNoiseControlCommand(
@@ -67,6 +72,7 @@ object AirPodsController {
         engine: Int,
         onStatus: (String) -> Unit
     ) {
+        saveLastMode(context, mode)
         val mainHandler = Handler(Looper.getMainLooper())
         fun report(msg: String) {
             Log.d("AirPodsController", msg)
@@ -112,13 +118,11 @@ object AirPodsController {
     private fun toHex(b: ByteArray): String =
         if (b.isEmpty()) "None" else b.joinToString("") { "%02X".format(it) }
 
-    // ENGINE 1: Use HiddenApiBypass.newInstance() to construct BluetoothSocket(TYPE_L2CAP = 3)
     private fun runEngine1BypassNewInstance(
         device: BluetoothDevice,
         mode: String,
         report: (String) -> Unit
     ) {
-        // First check if active socket is already open
         activeL2capSocket?.let { s ->
             if (s.isConnected) {
                 try {
@@ -138,21 +142,14 @@ object AirPodsController {
         }
 
         val logs = mutableListOf<String>()
-
-        // Inspect exact parameter types of all 7 constructors so we call the right signature
-        val ctors = BluetoothSocket::class.java.declaredConstructors
-        logs.add("Sigs:${ctors.size}")
-
-        // Try creating socket via HiddenApiBypass.newInstance for L2CAP (type=3) & RFCOMM AAP (type=1)
         val attempts = listOf(
             Triple("L2_1001_Insec", 3, 0x1001),
             Triple("L2_1001_Sec", -3, 0x1001),
-            Triple("L2_1003", 3, 0x1003),
             Triple("RF_AAP", 1, -1)
         )
 
         for ((label, typeCode, port) in attempts) {
-            report("E1 Trying $label via Bypass.newInstance...")
+            report("E1 Trying $label...")
             val executor = Executors.newSingleThreadExecutor()
             var sockRef: BluetoothSocket? = null
 
@@ -164,13 +161,7 @@ object AirPodsController {
 
                     val sock = HiddenApiBypass.newInstance(
                         BluetoothSocket::class.java,
-                        realType,
-                        -1,
-                        isSec,
-                        isSec,
-                        device,
-                        port,
-                        uuidArg
+                        realType, -1, isSec, isSec, device, port, uuidArg
                     ) as BluetoothSocket
                     sockRef = sock
                     sock.connect()
@@ -180,19 +171,16 @@ object AirPodsController {
                     out.write(HANDSHAKE); out.flush()
                     val r1 = toHex(readAvail(inp, 250))
                     out.write(SET_FEATURES); out.flush()
-                    out.write(REQ_NOTIFICATIONS); out.flush()
-                    Thread.sleep(100)
                     for (pkt in getAncPackets(mode)) {
                         out.write(pkt); out.flush()
                         Thread.sleep(80)
                     }
                     val r2 = toHex(readAvail(inp, 250))
-                    activeL2capSocket = sock // keep alive!
+                    activeL2capSocket = sock
                     "CONNECTED!(R1:$r1,R2:$r2)"
                 } catch (t: Throwable) {
                     try { sockRef?.close() } catch (_: Throwable) {}
-                    val msg = t.cause?.message ?: t.message ?: t.javaClass.simpleName
-                    "Err:${msg.take(28)}"
+                    "Err:${t.message?.take(28)}"
                 }
             }
 
@@ -208,71 +196,54 @@ object AirPodsController {
                 executor.shutdownNow()
             }
         }
-
         report("E1 Result:\n" + logs.joinToString("\n"))
     }
 
-    // ENGINE 2: Crash-Proof HiddenApiBypass.invoke() for createL2capSocket + AllBluetoothDevice Methods
     private fun runEngine2BypassInvokeMethod(
         device: BluetoothDevice,
         mode: String,
         report: (String) -> Unit
     ) {
         val logs = mutableListOf<String>()
-        val methods = HiddenApiBypass.getDeclaredMethods(BluetoothDevice::class.java)
-            .map { it as java.lang.reflect.Method }
-        val l2capMethods = methods.filter { it.name.contains("L2cap", ignoreCase = true) || it.name.contains("Socket", ignoreCase = true) }
-        logs.add("Found:${l2capMethods.map { it.name.replace("create", "") }.distinct().joinToString(",")}")
-
-        for (mName in listOf("createInsecureL2capSocket", "createL2capSocket", "createInsecureL2capChannel", "createL2capChannel")) {
-            report("E2 Invoking $mName(0x1001)...")
+        for (mName in listOf("createInsecureL2capSocket", "createL2capSocket")) {
+            report("E2 Invoking $mName...")
             val executor = Executors.newSingleThreadExecutor()
             var sockRef: BluetoothSocket? = null
             val future = executor.submit<String> {
                 try {
                     val sock = HiddenApiBypass.invoke(
-                        BluetoothDevice::class.java,
-                        device,
-                        mName,
-                        0x1001
+                        BluetoothDevice::class.java, device, mName, 0x1001
                     ) as BluetoothSocket
                     sockRef = sock
                     sock.connect()
                     val out = sock.outputStream
                     val inp = sock.inputStream
                     out.write(HANDSHAKE); out.flush()
-                    val r1 = toHex(readAvail(inp, 250))
-                    out.write(SET_FEATURES); out.flush()
                     for (pkt in getAncPackets(mode)) {
                         out.write(pkt); out.flush()
                         Thread.sleep(80)
                     }
-                    val r2 = toHex(readAvail(inp, 250))
                     activeL2capSocket = sock
-                    "OPEN!(R1:$r1,R2:$r2)"
+                    "OPEN!"
                 } catch (t: Throwable) {
                     try { sockRef?.close() } catch (_: Throwable) {}
-                    val msg = t.cause?.message ?: t.message ?: t.javaClass.simpleName
-                    "Err:${msg.take(26)}"
+                    "Err:${t.message?.take(26)}"
                 }
             }
             try {
                 val res = future.get(2800, TimeUnit.MILLISECONDS)
-                logs.add("${mName.replace("create", "")}->$res")
+                logs.add("$mName->$res")
                 if (res.startsWith("OPEN")) break
             } catch (_: Throwable) {
-                try { sockRef?.close() } catch (_: Throwable) {}
                 future.cancel(true)
-                logs.add("${mName.replace("create", "")}->TIMEOUT")
+                logs.add("$mName->TIMEOUT")
             } finally {
                 executor.shutdownNow()
             }
         }
-
         report("E2 Result:\n" + logs.joinToString("\n"))
     }
 
-    // ENGINE 3: Connect GATT Directly to the Scanned BLE Device (Mr-kang Mfg:0x004C) & Dump Apple Bytes!
     private fun runEngine3BleScanAndConnectGatt(
         context: Context,
         adapter: BluetoothAdapter,
@@ -280,79 +251,44 @@ object AirPodsController {
         report: (String) -> Unit
     ) {
         val scanner = adapter.bluetoothLeScanner ?: return report("E3: No BLE Scanner")
-        report("E3: Scanning for Mr-kang BLE (0x004C)...")
+        report("E3: Scanning for BLE...")
 
         var matchedResult: ScanResult? = null
         val callback = object : ScanCallback() {
             override fun onScanResult(callbackType: Int, result: ScanResult) {
-                val name = result.device?.name ?: result.scanRecord?.deviceName ?: ""
-                val mfg = result.scanRecord?.manufacturerSpecificData
-                val hasApple = mfg != null && mfg.get(0x004C) != null
-                if (name.contains("kang", ignoreCase = true) || result.device?.address?.endsWith("C8:8B") == true || (hasApple && result.rssi > -65)) {
+                val name = result.device?.name ?: ""
+                if (name.contains("airpods", true) || name.contains("kang", true) || matchedResult == null) {
                     if (matchedResult == null) matchedResult = result
                 }
             }
         }
-
-        val settings = ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build()
-        scanner.startScan(null, settings, callback)
-        for (i in 1..25) {
-            if (matchedResult != null) break
-            Thread.sleep(100)
-        }
+        scanner.startScan(null, ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build(), callback)
+        for (i in 1..20) { if (matchedResult != null) break; Thread.sleep(100) }
         scanner.stopScan(callback)
 
-        val res = matchedResult ?: return report("E3: Mr-kang BLE not found in scan")
-        val appleBytes = res.scanRecord?.manufacturerSpecificData?.get(0x004C)
-        val appleHex = if (appleBytes != null) toHex(appleBytes).take(28) else "None"
-
-        report("E3 Found BLE! AppleHex:$appleHex\nConnecting LE GATT...")
-
-        // Connect GATT specifically to the SCANNED BLE device instance using TRANSPORT_LE (2)
+        val res = matchedResult ?: return report("E3: BLE device not found")
         res.device.connectGatt(context, false, object : BluetoothGattCallback() {
             override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
-                if (newState == BluetoothProfile.STATE_CONNECTED) {
-                    report("E3 BLE GATT Connected! Discovering services...")
-                    gatt.discoverServices()
-                } else {
-                    report("E3 AppleHex:$appleHex\nGATT Disconnected (status=$status)")
-                    gatt.close()
-                }
+                if (newState == BluetoothProfile.STATE_CONNECTED) gatt.discoverServices()
+                else gatt.close()
             }
-
-            @Suppress("DEPRECATION")
             override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
                 Thread {
                     try {
-                        val srvs = mutableListOf<String>()
-                        var wroteCount = 0
                         for (s in gatt.services) {
-                            val su = s.uuid.toString().substring(0, 8)
-                            val chars = s.characteristics.map { c ->
-                                val cu = c.uuid.toString().substring(0, 4)
+                            for (c in s.characteristics) {
                                 val p = c.properties
                                 if ((p and BluetoothGattCharacteristic.PROPERTY_WRITE) != 0 ||
                                     (p and BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE) != 0) {
-                                    for (pkt in listOf(HANDSHAKE) + getAncPackets(mode)) {
-                                        try {
-                                            c.value = pkt
-                                            gatt.writeCharacteristic(c)
-                                            Thread.sleep(70)
-                                        } catch (_: Throwable) {}
+                                    for (pkt in getAncPackets(mode)) {
+                                        try { c.value = pkt; gatt.writeCharacteristic(c); Thread.sleep(60) } catch (_: Throwable) {}
                                     }
-                                    wroteCount++
-                                    "$cu(W)"
-                                } else cu
+                                }
                             }
-                            srvs.add("$su:[${chars.joinToString(",")}]")
                         }
-                        report("E3 BLE Wrote:$wroteCount | Hex:${appleHex.take(16)}\n" + srvs.joinToString("\n"))
-                        Thread.sleep(500)
-                        gatt.close()
-                    } catch (t: Throwable) {
-                        report("E3 Err: ${t.message}")
-                        gatt.close()
-                    }
+                        report("E3 BLE Command Sent ($mode)!")
+                        Thread.sleep(400); gatt.close()
+                    } catch (t: Throwable) { report("E3 Err: ${t.message}"); gatt.close() }
                 }.start()
             }
         }, BluetoothDevice.TRANSPORT_LE)

@@ -11,7 +11,6 @@ import android.util.Log
 import org.lsposed.hiddenapibypass.HiddenApiBypass
 import java.io.InputStream
 import java.io.OutputStream
-import java.lang.reflect.Constructor
 import java.util.UUID
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -55,20 +54,44 @@ object AirPodsController {
         return byteArrayOf(0x04, 0x00, 0x04, 0x00, 0x09, 0x00, 0x0D, m, 0x00, 0x00, 0x00)
     }
 
-    private fun sendAapSequence(out: OutputStream, inp: InputStream, mode: String): String {
+    private fun getClonePackets(mode: String): List<ByteArray> {
+        val aapMode: Byte = when (mode) {
+            "Off" -> 0x01
+            "ANC" -> 0x02
+            "Transparency" -> 0x03
+            else -> 0x02
+        }
+        val zeroMode: Byte = when (mode) {
+            "Off" -> 0x00
+            "ANC" -> 0x01
+            "Transparency" -> 0x02
+            else -> 0x01
+        }
+        return listOf(
+            // Short 8-byte AAP
+            byteArrayOf(0x04, 0x00, 0x04, 0x00, 0x09, 0x00, 0x0D, aapMode),
+            // Airoha / TigerBuilder RACE ANC
+            byteArrayOf(0x05, 0x5A, 0x06, 0x00, 0x06, 0x0E, 0x00, 0x0A, zeroMode, 0x01),
+            // JieLi RCSP ANC
+            byteArrayOf(0xFE.toByte(), 0xDC.toByte(), 0xBA.toByte(), 0xC0.toByte(), 0x08, 0x00, 0x05, 0x01, 0xFF.toByte(), 0xFF.toByte(), 0x19, zeroMode, 0xEF.toByte()),
+            // Bluetrum / Huilian ANC
+            byteArrayOf(0xAA.toByte(), 0x55, 0x02, 0x01, aapMode, (0x03 + aapMode).toByte())
+        )
+    }
+
+    private fun sendCleanAapSequence(out: OutputStream, inp: InputStream, mode: String): String {
         out.write(HANDSHAKE); out.flush()
         val r1 = toHex(readAvail(inp, 250))
         out.write(SET_FEATURES); out.flush()
         Thread.sleep(120)
         out.write(REQ_NOTIFICATIONS); out.flush()
         val r2 = toHex(readAvail(inp, 250))
-        val ancPkt = getAapAncPacket(mode)
-        out.write(ancPkt); out.flush()
+        val anc11 = getAapAncPacket(mode)
+        out.write(anc11); out.flush()
         Thread.sleep(150)
-        // Send second time to ensure mode switch registers
-        out.write(ancPkt); out.flush()
+        out.write(anc11); out.flush()
         val r3 = toHex(readAvail(inp, 250))
-        return "R1:${r1.take(12)}|R2:${r2.take(12)}|R3:${r3.take(12)}"
+        return "R1:${r1.take(10)}|R2:${r2.take(10)}|R3:${r3.take(10)}"
     }
 
     fun sendNoiseControlCommand(
@@ -100,7 +123,7 @@ object AirPodsController {
 
                 when (engine) {
                     1 -> runEngine1L2capConstructor(device, mode, ::report)
-                    2 -> runEngine2MethodsAndChannels(device, mode, ::report)
+                    2 -> runEngine2RfcommAndChannels(device, mode, ::report)
                     3 -> runEngine3DirectGatt(context, device, mode, ::report)
                 }
             } catch (t: Throwable) {
@@ -125,7 +148,6 @@ object AirPodsController {
     private fun toHex(b: ByteArray): String =
         if (b.isEmpty()) "None" else b.joinToString("") { "%02X".format(it) }
 
-    @Suppress("UNCHECKED_CAST")
     private fun buildRawSocket(
         device: BluetoothDevice,
         type: Int,
@@ -133,22 +155,13 @@ object AirPodsController {
         port: Int,
         uuid: ParcelUuid?
     ): BluetoothSocket {
-        val ctors = HiddenApiBypass.getDeclaredConstructors(BluetoothSocket::class.java) as List<Constructor<*>>
-        val ctor7 = ctors.firstOrNull { it.parameterTypes.size == 7 }
-            ?: BluetoothSocket::class.java.getDeclaredConstructor(
-                Int::class.javaPrimitiveType,
-                Int::class.javaPrimitiveType,
-                Boolean::class.javaPrimitiveType,
-                Boolean::class.javaPrimitiveType,
-                BluetoothDevice::class.java,
-                Int::class.javaPrimitiveType,
-                ParcelUuid::class.java
-            )
-        ctor7.isAccessible = true
-        return ctor7.newInstance(type, -1, secure, secure, device, port, uuid) as BluetoothSocket
+        val ctor = BluetoothSocket::class.java.declaredConstructors.firstOrNull { it.parameterTypes.size == 7 }
+            ?: throw IllegalStateException("No 7-arg ctor")
+        ctor.isAccessible = true
+        return ctor.newInstance(type, -1, secure, secure, device, port, uuid) as BluetoothSocket
     }
 
-    // ENGINE 1: Direct 7-Arg Constructor with AAP_UUID + L2CAP 0x1001
+    // ENGINE 1: Direct 7-Arg Constructor with AAP_UUID (74ec2172) & L2CAP 0x1001
     private fun runEngine1L2capConstructor(
         device: BluetoothDevice,
         mode: String,
@@ -173,16 +186,15 @@ object AirPodsController {
         val logs = mutableListOf<String>()
         val aapParcel = ParcelUuid(AAP_UUID)
 
-        // Test L2CAP (type=3) with AAP_UUID and with null UUID
         val attempts = listOf(
-             { buildRawSocket(device, 3, true, 0x1001, aapParcel) } to "L2_1001_UUID_Sec",
-            { buildRawSocket(device, 3, false, 0x1001, aapParcel) } to "L2_1001_UUID_Insec",
-            { buildRawSocket(device, 3, true, 0x1001, null) } to "L2_1001_Null_Sec",
-            { buildRawSocket(device, 3, false, 0x1001, null) } to "L2_1001_Null_Insec",
-            { buildRawSocket(device, 3, false, -1, aapParcel) } to "L2_SDP_AAP"
+            "L2_SDP_74ec" to { buildRawSocket(device, 3, false, -1, aapParcel) },
+            "L2_SDP_74ec_S" to { buildRawSocket(device, 3, true, -1, aapParcel) },
+            "L2_1001_UUID" to { buildRawSocket(device, 3, false, 0x1001, aapParcel) },
+            "L2_1001_Sec" to { buildRawSocket(device, 3, true, 0x1001, null) },
+            "L2_1001_Insec" to { buildRawSocket(device, 3, false, 0x1001, null) }
         )
 
-        for ((builder, label) in attempts) {
+        for ((label, builder) in attempts) {
             report("E1 Trying $label...")
             val executor = Executors.newSingleThreadExecutor()
             var sockRef: BluetoothSocket? = null
@@ -191,7 +203,7 @@ object AirPodsController {
                     val sock = builder()
                     sockRef = sock
                     sock.connect()
-                    val rep = sendAapSequence(sock.outputStream, sock.inputStream, mode)
+                    val rep = sendCleanAapSequence(sock.outputStream, sock.inputStream, mode)
                     activeSocket = sock
                     "OK!($rep)"
                 } catch (t: Throwable) {
@@ -200,7 +212,7 @@ object AirPodsController {
                 }
             }
             try {
-                val res = future.get(4000, TimeUnit.MILLISECONDS)
+                val res = future.get(3800, TimeUnit.MILLISECONDS)
                 logs.add("$label->$res")
                 if (res.startsWith("OK!")) {
                     report("E1 SUCCESS!\n" + logs.joinToString("\n"))
@@ -209,8 +221,8 @@ object AirPodsController {
             } catch (_: Throwable) {
                 try { sockRef?.close() } catch (_: Throwable) {}
                 future.cancel(true)
-                logs.add("$label->TIMEOUT")
-                Thread.sleep(300)
+                logs.add("$label->TO")
+                Thread.sleep(350)
             } finally {
                 executor.shutdownNow()
             }
@@ -219,54 +231,20 @@ object AirPodsController {
         report("E1 Result:\n" + logs.joinToString("\n"))
     }
 
-    // ENGINE 2: Longer-Timeout L2capSocket(0x1001) + Clean RFCOMM Ch1, Ch2, Ch3
-    private fun runEngine2MethodsAndChannels(
+    // ENGINE 2: Clean RFCOMM Ch1, Ch2, Ch3 & fe010000 with Separate Timing
+    private fun runEngine2RfcommAndChannels(
         device: BluetoothDevice,
         mode: String,
         report: (String) -> Unit
     ) {
         val logs = mutableListOf<String>()
+        val feUuid = try {
+            device.uuids?.map { it.uuid }?.firstOrNull { it.toString().startsWith("fe01", true) }
+        } catch (_: Throwable) { null }
+        if (feUuid != null) logs.add("FE:$feUuid")
 
-        // 1. Try Secure L2CAP 0x1001 first with 4.5s timeout
-        for (mName in listOf("createL2capSocket", "createInsecureL2capSocket")) {
-            report("E2 Waiting 4.5s for $mName(0x1001)...")
-            val executor = Executors.newSingleThreadExecutor()
-            var sockRef: BluetoothSocket? = null
-            val future = executor.submit<String> {
-                try {
-                    val sock = HiddenApiBypass.invoke(
-                        BluetoothDevice::class.java, device, mName, 0x1001
-                    ) as BluetoothSocket
-                    sockRef = sock
-                    sock.connect()
-                    val rep = sendAapSequence(sock.outputStream, sock.inputStream, mode)
-                    activeSocket = sock
-                    "OPEN!($rep)"
-                } catch (t: Throwable) {
-                    try { sockRef?.close() } catch (_: Throwable) {}
-                    "Err:${(t.cause?.message ?: t.message ?: "").take(20)}"
-                }
-            }
-            try {
-                val res = future.get(4500, TimeUnit.MILLISECONDS)
-                logs.add("${mName.replace("create", "")}->$res")
-                if (res.startsWith("OPEN!")) {
-                    report("E2 Result:\n" + logs.joinToString("\n"))
-                    return
-                }
-            } catch (_: Throwable) {
-                try { sockRef?.close() } catch (_: Throwable) {}
-                future.cancel(true)
-                logs.add("${mName.replace("create", "")}->TO")
-                Thread.sleep(400)
-            } finally {
-                executor.shutdownNow()
-            }
-        }
-
-        // 2. Test RFCOMM Ch 1, 2, 3, 5 (Skip Ch4 HFP AT port, Skip Echo loopback)
-        for (ch in listOf(1, 2, 3, 5)) {
-            report("E2 Trying RFCOMM Ch$ch...")
+        for (ch in listOf(1, 2, 3)) {
+            report("E2 Testing RFCOMM Channel $ch...")
             val executor = Executors.newSingleThreadExecutor()
             var sockRef: BluetoothSocket? = null
             val future = executor.submit<String> {
@@ -276,9 +254,19 @@ object AirPodsController {
                     ) as BluetoothSocket
                     sockRef = sock
                     sock.connect()
-                    val rep = sendAapSequence(sock.outputStream, sock.inputStream, mode)
-                    // Keep socket open for 600ms so firmware executes before close
-                    Thread.sleep(600)
+                    val out = sock.outputStream
+                    val inp = sock.inputStream
+
+                    // Step A: Clean Apple AAP first (wait 400ms to let DSP react)
+                    val rep = sendCleanAapSequence(out, inp, mode)
+                    Thread.sleep(400)
+
+                    // Step B: Clone chip packets with 150ms gap
+                    for (pkt in getClonePackets(mode)) {
+                        out.write(pkt); out.flush()
+                        Thread.sleep(150)
+                    }
+                    Thread.sleep(500)
                     sock.close()
                     "OPEN($rep)"
                 } catch (t: Throwable) {
@@ -287,7 +275,7 @@ object AirPodsController {
                 }
             }
             try {
-                val res = future.get(3000, TimeUnit.MILLISECONDS)
+                val res = future.get(4000, TimeUnit.MILLISECONDS)
                 logs.add("Ch$ch->$res")
             } catch (_: Throwable) {
                 try { sockRef?.close() } catch (_: Throwable) {}
@@ -301,7 +289,7 @@ object AirPodsController {
         report("E2 Result:\n" + logs.joinToString("\n"))
     }
 
-    // ENGINE 3: Direct BLE GATT on Paired Device (No Scanner Required!)
+    // ENGINE 3: Direct BLE GATT on Paired Device
     private fun runEngine3DirectGatt(
         context: Context,
         device: BluetoothDevice,
@@ -326,7 +314,7 @@ object AirPodsController {
                     try {
                         val srvs = mutableListOf<String>()
                         var wroteCount = 0
-                        val pkts = listOf(HANDSHAKE, SET_FEATURES, REQ_NOTIFICATIONS, getAapAncPacket(mode))
+                        val pkts = listOf(HANDSHAKE, SET_FEATURES, REQ_NOTIFICATIONS, getAapAncPacket(mode)) + getClonePackets(mode)
                         for (s in gatt.services) {
                             val su = s.uuid.toString().substring(0, 8)
                             val chars = s.characteristics.map { c ->
